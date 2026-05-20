@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>SDR Radar - FastAPI + Leaflet</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; font-family: Arial, sans-serif; }
+        .container { display: flex; height: 100%; width: 100%; }
+        .sidebar { width: 300px; background: #2c3e50; color: white; display: flex; flex-direction: column; overflow-y: auto; }
+        .map-section { flex-grow: 1; }
+        #map { height: 100%; width: 100%; }
+        
+        .header { padding: 15px; background: #1a252f; }
+        .header h2 { margin: 0; font-size: 1.2rem; }
+        .mode-toggle { margin-top: 15px; display: flex; flex-direction: column; gap: 5px; }
+        .panel { padding: 15px; border-bottom: 1px solid #34495e; }
+        
+        .flight-list { flex-grow: 1; padding: 15px; overflow-y: auto; }
+        .flight-item { background: #34495e; margin-bottom: 8px; padding: 10px; border-radius: 4px; font-size: 0.9rem; }
+        
+        button, input, select { width: 100%; padding: 8px; margin-top: 5px; box-sizing: border-box; }
+        
+        /* Custom Plane Icon */
+        .plane-icon { background: none; border: none; }
+        .plane-svg { width: 30px; height: 30px; fill: red; filter: drop-shadow(0px 0px 1px #fff); }
+        .plane-svg.history { fill: blue; }
+        
+        #history-panel { display: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <div class="header">
+                <h2>🛰️ SDR Radar</h2>
+                <div class="mode-toggle">
+                    <label><input type="radio" name="mode" value="live" checked onchange="toggleMode()"> V živo</label>
+                    <label><input type="radio" name="mode" value="history" onchange="toggleMode()"> Zgodovina (Replay)</label>
+                </div>
+            </div>
+            
+            <div id="live-panel" class="panel">
+                <h4>Status</h4>
+                <div id="live-count">Zaznanih letal: 0</div>
+            </div>
+            
+            <div id="history-panel" class="panel">
+                <h4>Zgodovina</h4>
+                <input type="datetime-local" id="hist-date">
+                <input type="time" id="hist-time" step="2">
+                <button onclick="fetchHistory()">Prikaži</button>
+                <div style="margin-top: 10px">
+                    <label><input type="checkbox" id="auto-play" onchange="toggleAutoPlay()"> Avtomatsko (2s)</label>
+                </div>
+                <div id="hist-count" style="margin-top: 10px;">Zaznanih letal: 0</div>
+            </div>
+            
+            <div class="flight-list" id="flight-list">
+                <!-- Flight items will go here -->
+            </div>
+        </div>
+        <div class="map-section">
+            <div id="map"></div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        let map = L.map('map').setView([46.0, 14.5], 8);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+        }).addTo(map);
+
+        let markers = {};
+        let polylines = {};
+        
+        let mode = 'live';
+        let liveInterval = null;
+        let historyInterval = null;
+        
+        const planeSvg = `<svg viewBox="0 0 24 24" class="plane-svg {CLASS}"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2 A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg>`;
+
+        function getPlaneIcon(track, isHistory) {
+            return L.divIcon({
+                html: `<div style="transform: rotate(${track}deg); transform-origin: center;">` + 
+                      planeSvg.replace('{CLASS}', isHistory ? 'history' : '') + `</div>`,
+                className: 'plane-icon',
+                iconSize: [30, 30],
+                iconAnchor: [15, 15]
+            });
+        }
+
+        function updateMap(data, isHistory=false) {
+            // Remove missing
+            let currentHexes = new Set(data.planes.map(p => p.hex));
+            for (let hex in markers) {
+                if (!currentHexes.has(hex)) {
+                    map.removeLayer(markers[hex]);
+                    map.removeLayer(polylines[hex]);
+                    delete markers[hex];
+                    delete polylines[hex];
+                }
+            }
+
+            // Update List
+            const listDiv = document.getElementById('flight-list');
+            listDiv.innerHTML = '';
+            
+            data.planes.forEach(p => {
+                let track = p.track || 0;
+                let routeOrigin = p.route_origin && p.route_origin !== 'N/A' && p.route_origin !== '?' ? p.route_origin : '??';
+                let routeDest = p.route_dest && p.route_dest !== 'N/A' && p.route_dest !== '?' ? p.route_dest : '??';
+
+                // Add marker
+                if (!markers[p.hex]) {
+                    markers[p.hex] = L.marker([p.lat, p.lon], {icon: getPlaneIcon(track, isHistory)}).addTo(map)
+                        .bindPopup(`<b>Fl: ${p.flight || p.hex}</b><br>Trasa: ${routeOrigin} ➔ ${routeDest}<br>Alt: ${p.alt_baro}<br>GS: ${p.gs}`);
+
+                    polylines[p.hex] = L.polyline([], {color: isHistory ? 'blue' : 'red', weight: 2, opacity: 0.5}).addTo(map);
+                } else {
+                    markers[p.hex].setLatLng([p.lat, p.lon]);
+                    markers[p.hex].setIcon(getPlaneIcon(track, isHistory));
+                    markers[p.hex].setPopupContent(`<b>Fl: ${p.flight || p.hex}</b><br>Trasa: ${routeOrigin} ➔ ${routeDest}<br>Alt: ${p.alt_baro}<br>GS: ${p.gs}`);
+                }
+
+                // Update paths
+                if (data.paths[p.flight]) {
+                    polylines[p.hex].setLatLngs(data.paths[p.flight]);
+                }
+
+                // Update List Item
+                let item = document.createElement('div');
+                item.className = 'flight-item';
+                item.innerHTML = `<b>${p.flight || p.hex}</b><br>Trasa: ${routeOrigin} ➔ ${routeDest}<br>Alt: ${p.alt_baro} ft<br>Knot: ${p.gs}`;
+                listDiv.appendChild(item);
+            });
+
+            if(isHistory) {
+                document.getElementById('hist-count').innerText = `Zaznanih letal: ${data.planes.length}`;
+            } else {
+                document.getElementById('live-count').innerText = `Zaznanih letal: ${data.planes.length}`;
+            }
+        }
+
+        async function fetchLive() {
+            if(mode !== 'live') return;
+            try {
+                let res = await fetch('/api/live');
+                let data = await res.json();
+                updateMap(data, false);
+            } catch(e) {}
+        }
+
+        async function fetchHistory() {
+            if(mode !== 'history') return;
+            let date = document.getElementById('hist-date').value;
+            let time = document.getElementById('hist-time').value;
+            if(!date || !time) return;
+            
+            let dt = `${date}T${time}`;
+            try {
+                let res = await fetch(`/api/history/data?target_time=${dt}`);
+                let data = await res.json();
+                updateMap(data, true);
+            } catch(e) {}
+        }
+
+        async function toggleMode() {
+            mode = document.querySelector('input[name="mode"]:checked').value;
+            if (mode === 'live') {
+                document.getElementById('live-panel').style.display = 'block';
+                document.getElementById('history-panel').style.display = 'none';
+                clearInterval(historyInterval);
+                historyInterval = null;
+                fetchLive();
+                liveInterval = setInterval(fetchLive, 2000);
+            } else {
+                document.getElementById('live-panel').style.display = 'none';
+                document.getElementById('history-panel').style.display = 'block';
+                clearInterval(liveInterval);
+                liveInterval = null;
+                
+                // Initialize dates if empty
+                let r = await fetch('/api/history/dates');
+                let d = await r.json();
+                if(d.max) {
+                    let dtx = new Date(d.max);
+                    document.getElementById('hist-date').value = dtx.toISOString().split('T')[0];
+                    document.getElementById('hist-time').value = dtx.toISOString().split('T')[1].split('.')[0];
+                }
+                fetchHistory();
+            }
+        }
+
+        function stepHistory() {
+            let timeInput = document.getElementById('hist-time');
+            if(!timeInput.value) return;
+            let [h, m, s] = timeInput.value.split(':').map(Number);
+            let d = new Date();
+            d.setHours(h || 0, m || 0, s || 0);
+            d.setSeconds(d.getSeconds() + 2);
+            timeInput.value = d.toTimeString().split(' ')[0];
+            fetchHistory();
+        }
+
+        function toggleAutoPlay() {
+            let auto = document.getElementById('auto-play').checked;
+            if(auto) {
+                historyInterval = setInterval(stepHistory, 2000);
+            } else {
+                clearInterval(historyInterval);
+                historyInterval = null;
+            }
+        }
+
+        // Init
+        toggleMode();
+    </script>
+</body>
+</html>

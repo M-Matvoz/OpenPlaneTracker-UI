@@ -27,7 +27,11 @@ INFLUX_BUCKET = "flights"
 influx_client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
 write_api = influx_client.write_api(write_options=SYNCHRONOUS)
 
-SENTINEL_URL = "http://sentinel:8001/api/sdrs"
+SENTINEL_URL = os.getenv("OPT_SENTINEL_URL", "http://sentinel:8001/api/sdrs")
+# New collated endpoint (served by OpenPlaneTracker-server)
+# Default collated URL should point to the server container on the Docker network
+# Use OPT_COLLATED_URL to override if needed
+COLLATED_URL = os.getenv("OPT_COLLATED_URL", "http://openplanetracker-server:8080/api/collated")
 DB_URI = "postgresql://postgres:postgrespw@db:5432/planetracker"
 engine = create_engine(DB_URI)
 
@@ -62,99 +66,87 @@ async def fetch_live_data():
             if not db_ready:
                 db_ready = init_db()
 
-            # Zberi trenutne SDR-je iz Sentinela
-            sdrs = []
+            # Try fetching a single collated JSON from the server
             try:
-                sentinel_res = requests.get(SENTINEL_URL, timeout=2)
-                if sentinel_res.status_code == 200:
-                    sdrs = sentinel_res.json()
+                response = requests.get(COLLATED_URL, timeout=5)
+                if response.status_code == 200 and response.text.strip():
+                    data = response.json()
+                    if "aircraft" in data:
+                        df = pd.DataFrame(data["aircraft"])
+                        if not df.empty and "lat" in df.columns:
+                            df = df.dropna(subset=["lat", "lon"])
+                            now = pd.Timestamp.now()
+                            if db_ready:
+                                db_cols = ['flight', 'alt_baro', 'gs', 'track', 'lat', 'lon', 'hex']
+                                for col in db_cols:
+                                    if col not in df.columns:
+                                        df[col] = None
+                                db_df = df[db_cols].copy()
+                                db_df['flight'] = db_df['flight'].astype(str).str.strip()
+                                db_df['hex'] = db_df['hex'].astype(str).str.strip()
+                                for col in ['alt_baro', 'gs', 'track', 'lat', 'lon']:
+                                    db_df[col] = pd.to_numeric(db_df[col], errors='coerce')
+                                db_df['timestamp'] = now
+                                
+                                live_history = pd.concat([live_history, db_df])
+                                
+                                points = []
+                                for _, row in db_df.iterrows():
+                                    flight_no = str(row.get('flight', '')).strip()
+                                    hex_code = str(row.get('hex', '')).strip()
+                                    
+                                    # Use hex + flight combo or just hex as the session identifier
+                                    session_key = f"{hex_code}_{flight_no}"
+                                    
+                                    if session_key not in flight_uuids:
+                                        new_uuid = str(uuid.uuid4())
+                                        flight_uuids[session_key] = new_uuid
+                                        
+                                        # Register new flight in postgres
+                                        try:
+                                            with engine.begin() as conn:
+                                                conn.execute(
+                                                    text("INSERT INTO flights (flight_no, started_tracking, ended_tracking, flightpath_uuid, from_airport, to_airport) VALUES (:f, :s, :e, :u, :fr, :to)"),
+                                                    {"f": flight_no, "s": now, "e": now, "u": new_uuid, "fr": "Unknown", "to": "Unknown"}
+                                                )
+                                        except Exception as e:
+                                            print(f"Napaka pri ustvarjanju leta v DB: {e}")
+                                    else:
+                                        # Update ended tracking
+                                        try:
+                                            with engine.begin() as conn:
+                                                conn.execute(
+                                                    text("UPDATE flights SET ended_tracking = :e WHERE flightpath_uuid = :u"),
+                                                    {"e": now, "u": flight_uuids[session_key]}
+                                                )
+                                        except Exception as e:
+                                            pass
+
+                                    f_uuid = flight_uuids[session_key]
+                                    p = (Point("flight_telemetry")
+                                        .tag("flight_uuid", f_uuid)
+                                        .tag("flight_no", flight_no)
+                                        .tag("hex", hex_code)
+                                        .field("lat", float(row['lat']) if pd.notnull(row['lat']) else 0.0)
+                                        .field("lon", float(row['lon']) if pd.notnull(row['lon']) else 0.0)
+                                        .field("alt_baro", float(row['alt_baro']) if pd.notnull(row['alt_baro']) else 0.0)
+                                        .field("gs", float(row['gs']) if pd.notnull(row['gs']) else 0.0)
+                                        .field("track", float(row['track']) if pd.notnull(row['track']) else 0.0))
+                                    points.append(p)
+                                    
+                                try:
+                                    if points:
+                                        write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=points)
+                                except Exception as e:
+                                    print(f"Napaka InfluxDB: {e}")
+                            else:
+                                fallback_df = df.copy()
+                                fallback_df['timestamp'] = now
+                                if 'flight' not in fallback_df.columns:
+                                    fallback_df['flight'] = fallback_df.get('hex', '')
+                                live_history = pd.concat([live_history, fallback_df])
             except Exception as e:
-                print(f"Sentinel nedosegljiv: {e}")
-
-            active_ips = [sdr["ip"] for sdr in sdrs if sdr["status"] == "running" and sdr["ip"] != "unknown"]
-
-            for ip in active_ips:
-                readsb_url = f"http://{ip}:8080/data/aircraft.json"
-                try:
-                    response = requests.get(readsb_url, timeout=2)
-                    if response.status_code == 200 and response.text.strip():
-                        data = response.json()
-                        if "aircraft" in data:
-                            df = pd.DataFrame(data["aircraft"])
-                            if not df.empty and "lat" in df.columns:
-                                df = df.dropna(subset=["lat", "lon"])
-                                now = pd.Timestamp.now()
-                                if db_ready:
-                                    db_cols = ['flight', 'alt_baro', 'gs', 'track', 'lat', 'lon', 'hex']
-                                    for col in db_cols:
-                                        if col not in df.columns:
-                                            df[col] = None
-                                    db_df = df[db_cols].copy()
-                                    db_df['flight'] = db_df['flight'].astype(str).str.strip()
-                                    db_df['hex'] = db_df['hex'].astype(str).str.strip()
-                                    for col in ['alt_baro', 'gs', 'track', 'lat', 'lon']:
-                                        db_df[col] = pd.to_numeric(db_df[col], errors='coerce')
-                                    db_df['timestamp'] = now
-                                    
-                                    live_history = pd.concat([live_history, db_df])
-                                    
-                                    points = []
-                                    for _, row in db_df.iterrows():
-                                        flight_no = str(row.get('flight', '')).strip()
-                                        hex_code = str(row.get('hex', '')).strip()
-                                        
-                                        # Use hex + flight combo or just hex as the session identifier
-                                        session_key = f"{hex_code}_{flight_no}"
-                                        
-                                        if session_key not in flight_uuids:
-                                            new_uuid = str(uuid.uuid4())
-                                            flight_uuids[session_key] = new_uuid
-                                            
-                                            # Register new flight in postgres
-                                            try:
-                                                with engine.begin() as conn:
-                                                    conn.execute(
-                                                        text("INSERT INTO flights (flight_no, started_tracking, ended_tracking, flightpath_uuid, from_airport, to_airport) VALUES (:f, :s, :e, :u, :fr, :to)"),
-                                                        {"f": flight_no, "s": now, "e": now, "u": new_uuid, "fr": "Unknown", "to": "Unknown"}
-                                                    )
-                                            except Exception as e:
-                                                print(f"Napaka pri ustvarjanju leta v DB: {e}")
-                                        else:
-                                            # Update ended tracking
-                                            try:
-                                                with engine.begin() as conn:
-                                                    conn.execute(
-                                                        text("UPDATE flights SET ended_tracking = :e WHERE flightpath_uuid = :u"),
-                                                        {"e": now, "u": flight_uuids[session_key]}
-                                                    )
-                                            except Exception as e:
-                                                pass
-
-                                        f_uuid = flight_uuids[session_key]
-                                        p = (Point("flight_telemetry")
-                                            .tag("flight_uuid", f_uuid)
-                                            .tag("flight_no", flight_no)
-                                            .tag("hex", hex_code)
-                                            .field("lat", float(row['lat']) if pd.notnull(row['lat']) else 0.0)
-                                            .field("lon", float(row['lon']) if pd.notnull(row['lon']) else 0.0)
-                                            .field("alt_baro", float(row['alt_baro']) if pd.notnull(row['alt_baro']) else 0.0)
-                                            .field("gs", float(row['gs']) if pd.notnull(row['gs']) else 0.0)
-                                            .field("track", float(row['track']) if pd.notnull(row['track']) else 0.0))
-                                        points.append(p)
-                                        
-                                    try:
-                                        if points:
-                                            write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=points)
-                                    except Exception as e:
-                                        print(f"Napaka InfluxDB: {e}")
-                                else:
-                                    fallback_df = df.copy()
-                                    fallback_df['timestamp'] = now
-                                    if 'flight' not in fallback_df.columns:
-                                        fallback_df['flight'] = fallback_df.get('hex', '')
-                                    live_history = pd.concat([live_history, fallback_df])
-                except Exception as e:
-                    print(f"Napaka ReadSB {ip}: {e}")
+                print(f"Napaka fetching collated data: {e}")
 
             # Da preprečimo preveliko rabo pomnilnika, ohranimo zadnjih 24 ur (namesto le 5 minut)
             cutoff = pd.Timestamp.now() - pd.Timedelta(hours=24)

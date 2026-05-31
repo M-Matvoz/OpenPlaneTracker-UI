@@ -108,8 +108,7 @@
         /* Styles for sidebar toggle */
         .sidebar-toggle-button {
             position: absolute;
-            left: 0;
-            /* Position to the left of the sidebar */
+            left: 300px; /* Start position to the right of the sidebar */
             top: 50%;
             transform: translateY(-50%);
             background: #2c3e50;
@@ -139,18 +138,11 @@
         .container.sidebar-hidden .sidebar-toggle-button {
             left: 0;
         }
-
-        /* Adjustments for when sidebar is visible */
-        .container:not(.sidebar-hidden) .sidebar-toggle-button {
-            left: 300px;
-            /* Moves button to the right of the visible sidebar */
-        }
     </style>
 </head>
 
 <body>
     <div class="container">
-        <button class="sidebar-toggle-button" onclick="toggleSidebar()">❮</button>
         <div class="sidebar">
             <div class="header">
                 <h2>SDR Radar</h2>
@@ -181,6 +173,7 @@
                 <!-- Flight items will go here -->
             </div>
         </div>
+        <button class="sidebar-toggle-button" onclick="toggleSidebar()">❮</button>
         <div class="map-section">
             <div id="map"></div>
         </div>

@@ -14,6 +14,8 @@ from contextlib import asynccontextmanager
 from FlightRadar24 import FlightRadar24API
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
+import math
+import numpy as np
 
 INFLUX_URL = "http://influxdb:8086"
 try:
@@ -287,15 +289,55 @@ async def get_live():
         lambda x: x[["lat", "lon"]].values.tolist(), include_groups=False
     ).to_dict()
 
+    # Sanitize paths: convert numpy types to Python floats and drop invalid points
+    sanitized_paths = {}
+    for flt, pts in (paths or {}).items():
+        good_pts = []
+        for p in pts:
+            # p may be a list/ndarray like [lat, lon]
+            try:
+                lat = float(p[0])
+                lon = float(p[1])
+            except Exception:
+                continue
+            if not (math.isfinite(lat) and math.isfinite(lon)):
+                continue
+            good_pts.append([lat, lon])
+        sanitized_paths[flt] = good_pts
+
     active_latest_df = active_latest_df.replace({pd.NA: None})
     planes = active_latest_df.to_dict(orient="records")
+    # Sanitize plane records: replace NaN/inf with None and coerce numpy types
+    def _sanitize_obj(obj):
+        if isinstance(obj, dict):
+            return {k: _sanitize_obj(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_sanitize_obj(v) for v in obj]
+        # pandas/ numpy missing
+        try:
+            if pd.isna(obj):
+                return None
+        except Exception:
+            pass
+        # numeric types
+        if isinstance(obj, (int, float, np.number)):
+            try:
+                f = float(obj)
+                if not math.isfinite(f):
+                    return None
+                return f
+            except Exception:
+                return None
+        return obj
     for p in planes:
         flight_call = str(p.get('flight', '')).strip()
         route = flight_routes_cache.get(flight_call, {"origin": "?", "destination": "?"})
         p['route_origin'] = route['origin']
         p['route_dest'] = route['destination']
-        
-    return {"planes": planes, "paths": paths}
+        # sanitize each record in-place
+    planes = [_sanitize_obj(p) for p in planes]
+
+    return {"planes": planes, "paths": sanitized_paths}
 
 @app.get("/api/history/dates")
 async def get_history_dates():

@@ -266,7 +266,7 @@
         async function fetchLive() {
             if (mode !== 'live') return;
             try {
-                let res = await fetch('/api/live');
+                let res = await fetch('/api/collated');
                 let data = await res.json();
                 updateMap(data, false);
             } catch (e) { }

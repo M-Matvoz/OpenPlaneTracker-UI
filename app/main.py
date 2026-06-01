@@ -9,6 +9,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
 from datetime import datetime, timedelta
 import os
+import numpy as np
 import uvicorn
 import uuid
 from contextlib import asynccontextmanager
@@ -209,7 +210,6 @@ async def get_collated_data():
         if len(points) > 0:
             current_segment = [[points[0][0], points[0][1]]]
             for i in range(1, len(points)):
-                # Ensure timestamps are timezone-aware for subtraction
                 ts1 = pd.to_datetime(points[i - 1][2]).tz_localize(None)
                 ts2 = pd.to_datetime(points[i][2]).tz_localize(None)
                 time_diff = (ts2 - ts1).total_seconds()
@@ -217,20 +217,33 @@ async def get_collated_data():
                     if len(current_segment) > 1:
                         segments.append(current_segment)
                     current_segment = []
-                # Only add point if it has coordinates
-                if points[i][0] is not None and points[i][1] is not None:
+                # Preverimo, da koordinate niso NaN ali None
+                if (
+                    pd.notnull(points[i][0])
+                    and pd.notnull(points[i][1])
+                    and not (isinstance(points[i][0], float) and np.isnan(points[i][0]))
+                ):
                     current_segment.append([points[i][0], points[i][1]])
             if len(current_segment) > 1:
                 segments.append(current_segment)
         paths[flight] = segments
 
-    # Pripravi podatke za JSON response
-    active_latest_df = active_latest_df.replace({pd.NA: None})
-    all_latest_df = all_latest_df.sort_values("timestamp", ascending=False).replace({pd.NA: None})
+    # REŠITEV: Pretvorba NaN v None in Timestamp v ISO string (ali izbris), da bo JSON compliant
+    # Namesto .replace({pd.NA: None}) uporabimo kombinacijo, ki ulije mir v JSON encoder
+    active_latest_df = active_latest_df.astype(object).where(pd.notnull(active_latest_df), None)
+    all_latest_df = (
+        all_latest_df.sort_values("timestamp", ascending=False).astype(object).where(pd.notnull(all_latest_df), None)
+    )
 
     aircraft = active_latest_df.to_dict(orient="records")
     all_aircraft = all_latest_df.to_dict(orient="records")
-    print(f"Active aircraft: {aircraft}, All aircraft: {all_aircraft}, Paths: {paths}")
+
+    # Počistimo še specifične elemente znotraj listov (npr. Timestamp objekte)
+    for ac in aircraft + all_aircraft:
+        if ac.get("timestamp"):
+            ac["timestamp"] = ac["timestamp"].isoformat()
+
+    print(f"Active aircraft: {len(aircraft)}, All aircraft: {len(all_aircraft)}, Paths: {len(paths)}")
 
     return {"aircraft": aircraft, "all_aircraft": all_aircraft, "paths": paths}
 

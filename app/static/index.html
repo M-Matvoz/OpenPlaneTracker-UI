@@ -354,7 +354,7 @@
         async function fetchLive() {
             if (mode !== 'live') return;
             try {
-                let res = await fetch('/api/collated');
+                let res = await fetch('/live/collated');
                 lastData = await res.json();
                 updateMap(lastData, false);
             } catch (e) { }
@@ -368,7 +368,7 @@
 
             let dt = `${date}T${time}`;
             try {
-                let res = await fetch(`/api/history/data?target_time=${dt}`);
+                let res = await fetch(`/live/history/data?target_time=${dt}`);
                 lastData = await res.json();
                 updateMap(lastData, true);
             } catch (e) { }
@@ -392,7 +392,7 @@
                 selectedFlightHex = null; // Clear selection
 
                 // Initialize dates if empty
-                let r = await fetch('/api/history/dates');
+                let r = await fetch('/live/history/dates');
                 let d = await r.json();
                 if (d.max) {
                     let dtx = new Date(d.max);

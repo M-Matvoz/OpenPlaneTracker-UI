@@ -184,7 +184,7 @@ async def get_index():
         return HTMLResponse(content=f.read())
 
 
-@app.get("/api/collated")
+@app.get("/live/collated")
 async def get_collated_data():
     if live_history.empty:
         return {"aircraft": [], "all_aircraft": [], "paths": {}}
@@ -235,7 +235,7 @@ async def get_collated_data():
     return {"aircraft": aircraft, "all_aircraft": all_aircraft, "paths": paths}
 
 
-@app.get("/api/history/dates")
+@app.get("/live/history/dates")
 async def get_history_dates():
     if not db_ready:
         return {"min": None, "max": None}
@@ -250,7 +250,7 @@ async def get_history_dates():
         return {"min": None, "max": None}
 
 
-@app.get("/api/history/data")
+@app.get("/live/history/data")
 async def get_history_data(target_time: str):
     if not db_ready:
         return {"planes": [], "paths": {}}

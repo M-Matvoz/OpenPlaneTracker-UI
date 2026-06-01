@@ -253,7 +253,8 @@ async def get_history_dates():
 @app.get("/live/history/data")
 async def get_history_data(target_time: str):
     if not db_ready:
-        return {"planes": [], "paths": {}}
+        return {"aircraft": [], "all_aircraft": [], "paths": {}}  # Popravljeno na ključe, ki jih frontend pričakuje
+
     try:
         target_dt = datetime.fromisoformat(target_time)
 
@@ -266,7 +267,7 @@ async def get_history_data(target_time: str):
             active_flights_df = pd.read_sql(active_flights_query, connection, params={"target": target_dt})
 
         if active_flights_df.empty:
-            return {"planes": [], "paths": {}}
+            return {"aircraft": [], "all_aircraft": [], "paths": {}}
 
         active_uuids = tuple(active_flights_df["flightpath_uuid"].astype(str).tolist())
 
@@ -286,48 +287,72 @@ async def get_history_data(target_time: str):
         paths = {}
 
         for table in result:
+            if not table.records:
+                continue
+
             flight_uuid = table.records[0].values.get("flight_uuid")
-            flight_no = active_flights_df[active_flights_df["flightpath_uuid"].astype(str) == flight_uuid][
+            flight_no_series = active_flights_df[active_flights_df["flightpath_uuid"].astype(str) == flight_uuid][
                 "flight_no"
-            ].iloc[0]
+            ]
+            if flight_no_series.empty:
+                continue
+            flight_no = flight_no_series.iloc[0]
 
-            # Process paths to include segments for gaps
+            # Sort records by time
+            sorted_records = sorted(table.records, key=lambda r: r.get_time())
+
             segments = []
-            if table.records:
-                # Sort records by time just in case
-                sorted_records = sorted(table.records, key=lambda r: r.get_time())
+            current_segment = []
 
-                current_segment = [
-                    [sorted_records[0].get_value_by_key("lat"), sorted_records[0].get_value_by_key("lon")]
-                ]
-                for i in range(1, len(sorted_records)):
-                    time_diff = (sorted_records[i].get_time() - sorted_records[i - 1].get_time()).total_seconds()
-                    if time_diff > 10:
+            for i, record in enumerate(sorted_records):
+                lat = record.get_value_by_key("lat")
+                lon = record.get_value_by_key("lon")
+
+                # VARNOSTNI POPRAVEK: Preskoči točko, če je NaN ali None
+                if lat is None or lon is None or math.isnan(lat) or math.isnan(lon):
+                    continue
+
+                if i > 0:
+                    time_diff = (record.get_time() - sorted_records[i - 1].get_time()).total_seconds()
+                    if time_diff > 10 and current_segment:
                         segments.append(current_segment)
                         current_segment = []
-                    current_segment.append(
-                        [sorted_records[i].get_value_by_key("lat"), sorted_records[i].get_value_by_key("lon")]
-                    )
+
+                current_segment.append([lat, lon])
+
+            if current_segment:
                 segments.append(current_segment)
 
             paths[flight_no] = segments
 
             # Get the latest record for the plane's current position
-            if table.records:
-                latest_record = max(table.records, key=lambda r: r.get_time())
+            latest_record = max(table.records, key=lambda r: r.get_time())
+            l_lat = latest_record.get_value_by_key("lat")
+            l_lon = latest_record.get_value_by_key("lon")
+
+            # Če ima zadnja znana točka NaN lokacijo, je raje ne rišemo kot marker
+            if l_lat is not None and l_lon is not None and not math.isnan(l_lat) and not math.isnan(l_lon):
+                # Pripravimo vrednosti in nadomestimo NaN z None (ki se prevede v JSON null)
+                alt = latest_record.get_value_by_key("alt_baro")
+                gs = latest_record.get_value_by_key("gs")
+                track = latest_record.get_value_by_key("track")
+
                 planes.append(
                     {
                         "hex": latest_record.values.get("hex"),
                         "flight": flight_no,
-                        "lat": latest_record.get_value_by_key("lat"),
-                        "lon": latest_record.get_value_by_key("lon"),
-                        "alt_baro": latest_record.get_value_by_key("alt_baro"),
-                        "gs": latest_record.get_value_by_key("gs"),
-                        "track": latest_record.get_value_by_key("track"),
+                        "lat": l_lat,
+                        "lon": l_lon,
+                        "alt_baro": (None if alt is None or math.isnan(alt) else int(alt)),
+                        "gs": None if gs is None or math.isnan(gs) else int(gs),
+                        "track": (None if track is None or math.isnan(track) else track),
                     }
                 )
 
-        return {"planes": planes, "paths": paths}
+        # FRONTEND USKLADITEV: Frontend v index.html za zgodovino pričakuje ključa 'aircraft' in 'all_aircraft'
+        # namesto 'planes'. Zato vrnemo strukturo, ki jo updateMap() dejansko zna prebrati.
+        return {"aircraft": planes, "all_aircraft": planes, "paths": paths}
+
     except Exception as e:
-        print(e)
-        return {"planes": [], "paths": {}}
+        print(f"Napaka v zgodovini: {e}")
+        return {"aircraft": [], "all_aircraft": [], "paths": {}}

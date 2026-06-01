@@ -84,6 +84,12 @@
             padding: 10px;
             border-radius: 4px;
             font-size: 0.9rem;
+            cursor: pointer;
+            border: 2px solid transparent;
+        }
+
+        .flight-item.selected {
+            border-color: #1abc9c;
         }
 
         button,
@@ -194,6 +200,7 @@
 
         let markers = {};
         let polylines = {};
+        let selectedFlightHex = null;
 
         let mode = 'live';
         let liveInterval = null;
@@ -217,7 +224,9 @@
             for (let hex in markers) {
                 if (!currentHexes.has(hex)) {
                     map.removeLayer(markers[hex]);
-                    map.removeLayer(polylines[hex]);
+                    if (polylines[hex]) {
+                        polylines[hex].forEach(pl => map.removeLayer(pl));
+                    }
                     delete markers[hex];
                     delete polylines[hex];
                 }
@@ -229,32 +238,31 @@
 
             data.planes.forEach(p => {
                 let track = p.track || 0;
-                let routeOrigin = p.route_origin && p.route_origin !== 'N/A' && p.route_origin !== '?' ? p.route_origin : '??';
-                let routeDest = p.route_dest && p.route_dest !== 'N/A' && p.route_dest !== '?' ? p.route_dest : '??';
 
                 // Add marker
                 if (!markers[p.hex]) {
                     markers[p.hex] = L.marker([p.lat, p.lon], { icon: getPlaneIcon(track, isHistory) }).addTo(map)
-                        .bindPopup(`<b>Fl: ${p.flight || p.hex}</b><br>Trasa: ${routeOrigin} ➔ ${routeDest}<br>Alt: ${p.alt_baro}<br>GS: ${p.gs}`);
-
-                    polylines[p.hex] = L.polyline([], { color: isHistory ? 'blue' : 'red', weight: 2, opacity: 0.5 }).addTo(map);
+                        .bindPopup(`<b>Fl: ${p.flight || p.hex}</b><br>Alt: ${p.alt_baro}<br>GS: ${p.gs}`);
+                    markers[p.hex].on('click', () => toggleFlightSelection(p.hex));
                 } else {
                     markers[p.hex].setLatLng([p.lat, p.lon]);
                     markers[p.hex].setIcon(getPlaneIcon(track, isHistory));
-                    markers[p.hex].setPopupContent(`<b>Fl: ${p.flight || p.hex}</b><br>Trasa: ${routeOrigin} ➔ ${routeDest}<br>Alt: ${p.alt_baro}<br>GS: ${p.gs}`);
+                    markers[p.hex].setPopupContent(`<b>Fl: ${p.flight || p.hex}</b><br>Alt: ${p.alt_baro}<br>GS: ${p.gs}`);
                 }
 
-                // Update paths
-                if (data.paths[p.flight]) {
-                    polylines[p.hex].setLatLngs(data.paths[p.flight]);
-                }
+                // Update paths based on selection
+                updateFlightPath(p, data.paths, isHistory);
 
                 // Update List Item
                 let item = document.createElement('div');
                 item.className = 'flight-item';
-                item.innerHTML = `<b>${p.flight || p.hex}</b><br>Trasa: ${routeOrigin} ➔ ${routeDest}<br>Alt: ${p.alt_baro} ft<br>Knot: ${p.gs}`;
+                item.id = `flight-item-${p.hex}`;
+                item.innerHTML = `<b>${p.flight || p.hex}</b><br>Alt: ${p.alt_baro} ft<br>Knot: ${p.gs}`;
+                item.onclick = () => toggleFlightSelection(p.hex);
                 listDiv.appendChild(item);
             });
+
+            updateSelectionHighlight();
 
             if (isHistory) {
                 document.getElementById('hist-count').innerText = `Zaznanih letal: ${data.planes.length}`;
@@ -263,12 +271,84 @@
             }
         }
 
+        function updateFlightPath(plane, allPaths, isHistory) {
+            const flightId = plane.flight;
+            const hex = plane.hex;
+
+            // Clear existing polylines for this flight
+            if (polylines[hex]) {
+                polylines[hex].forEach(pl => map.removeLayer(pl));
+            }
+            polylines[hex] = [];
+
+            if (selectedFlightHex === hex && allPaths[flightId]) {
+                const segments = allPaths[flightId];
+                for (let i = 0; i < segments.length; i++) {
+                    // Draw solid line for the segment
+                    const segment = segments[i];
+                    if (segment && segment.length > 1) {
+                        const solidLine = L.polyline(segment, { color: isHistory ? 'blue' : 'red', weight: 2, opacity: 0.7 }).addTo(map);
+                        polylines[hex].push(solidLine);
+                    }
+
+                    // Draw dotted line to the next segment if it exists
+                    if (i < segments.length - 1) {
+                        const nextSegment = segments[i + 1];
+                        if (segment.length > 0 && nextSegment.length > 0) {
+                            const lastPoint = segment[segment.length - 1];
+                            const firstPointOfNext = nextSegment[0];
+                            const dottedLine = L.polyline([lastPoint, firstPointOfNext], { color: isHistory ? 'cyan' : 'orange', weight: 2, opacity: 0.7, dashArray: '5, 10' }).addTo(map);
+                            polylines[hex].push(dottedLine);
+                        }
+                    }
+                }
+            }
+        }
+
+        function toggleFlightSelection(hex) {
+            if (selectedFlightHex === hex) {
+                selectedFlightHex = null; // Deselect
+            } else {
+                selectedFlightHex = hex;
+            }
+            // This will trigger a full redraw of paths on the next data refresh
+            // To make it instant, we can call a redraw function here if we store the last data object
+            redrawAllPaths();
+            updateSelectionHighlight();
+        }
+
+        function updateSelectionHighlight() {
+            document.querySelectorAll('.flight-item').forEach(item => {
+                item.classList.remove('selected');
+            });
+            if (selectedFlightHex) {
+                const selectedItem = document.getElementById(`flight-item-${selectedFlightHex}`);
+                if (selectedItem) {
+                    selectedItem.classList.add('selected');
+                }
+            }
+        }
+
+        let lastData = null; // Store last fetched data
+        function redrawAllPaths() {
+            if (!lastData) return;
+            // Clear all polylines
+            for (const hex in polylines) {
+                polylines[hex].forEach(pl => map.removeLayer(pl));
+                polylines[hex] = [];
+            }
+            // Redraw paths for all planes based on current selection
+            lastData.planes.forEach(p => {
+                updateFlightPath(p, lastData.paths, mode === 'history');
+            });
+        }
+
         async function fetchLive() {
             if (mode !== 'live') return;
             try {
                 let res = await fetch('/api/collated');
-                let data = await res.json();
-                updateMap(data, false);
+                lastData = await res.json();
+                updateMap(lastData, false);
             } catch (e) { }
         }
 
@@ -281,8 +361,8 @@
             let dt = `${date}T${time}`;
             try {
                 let res = await fetch(`/api/history/data?target_time=${dt}`);
-                let data = await res.json();
-                updateMap(data, true);
+                lastData = await res.json();
+                updateMap(lastData, true);
             } catch (e) { }
         }
 
@@ -300,6 +380,8 @@
                 document.getElementById('history-panel').style.display = 'block';
                 clearInterval(liveInterval);
                 liveInterval = null;
+                lastData = null; // Clear last data when switching modes
+                selectedFlightHex = null; // Clear selection
 
                 // Initialize dates if empty
                 let r = await fetch('/api/history/dates');

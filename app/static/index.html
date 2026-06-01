@@ -219,25 +219,21 @@
         }
 
         function updateMap(data, isHistory = false) {
-            if (!data || !data.aircraft) {
-                console.error("Invalid data received for map:", data);
-                return;
-            }
-            if (!data || !data.all_aircraft) {
-                console.error("Invalid data received for list:", data);
+            if (!data || !data.aircraft || !data.all_aircraft) {
+                console.error("Invalid data received:", data);
                 return;
             }
 
             // Remove missing markers from map
-            let currentHexes = new Set(data.aircraft.map(p => p.hex));
+            let currentActiveHexes = new Set(data.aircraft.map(p => p.hex));
             for (let hex in markers) {
-                if (!currentHexes.has(hex)) {
+                if (!currentActiveHexes.has(hex)) {
                     map.removeLayer(markers[hex]);
                     if (polylines[hex]) {
                         polylines[hex].forEach(pl => map.removeLayer(pl));
+                        delete polylines[hex];
                     }
                     delete markers[hex];
-                    delete polylines[hex];
                 }
             }
 
@@ -294,6 +290,7 @@
 
             if (selectedFlightHex === hex && allPaths[flightId]) {
                 const segments = allPaths[flightId];
+                if (!segments) return;
                 for (let i = 0; i < segments.length; i++) {
                     // Draw solid line for the segment
                     const segment = segments[i];
@@ -305,7 +302,7 @@
                     // Draw dotted line to the next segment if it exists
                     if (i < segments.length - 1) {
                         const nextSegment = segments[i + 1];
-                        if (segment.length > 0 && nextSegment.length > 0) {
+                        if (segment && segment.length > 0 && nextSegment && nextSegment.length > 0) {
                             const lastPoint = segment[segment.length - 1];
                             const firstPointOfNext = nextSegment[0];
                             const dottedLine = L.polyline([lastPoint, firstPointOfNext], { color: isHistory ? 'cyan' : 'orange', weight: 2, opacity: 0.7, dashArray: '5, 10' }).addTo(map);

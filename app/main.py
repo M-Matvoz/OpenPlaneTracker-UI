@@ -210,21 +210,23 @@ async def get_collated_data():
             current_segment = [[points[0][0], points[0][1]]]
             for i in range(1, len(points)):
                 # Ensure timestamps are timezone-aware for subtraction
-                ts1 = pd.to_datetime(points[i - 1][2]).tz_convert(None)
-                ts2 = pd.to_datetime(points[i][2]).tz_convert(None)
+                ts1 = pd.to_datetime(points[i - 1][2]).tz_localize(None)
+                ts2 = pd.to_datetime(points[i][2]).tz_localize(None)
                 time_diff = (ts2 - ts1).total_seconds()
                 if time_diff > 10:
-                    if len(current_segment) > 0:
+                    if len(current_segment) > 1:
                         segments.append(current_segment)
                     current_segment = []
-                current_segment.append([points[i][0], points[i][1]])
-            if len(current_segment) > 0:
+                # Only add point if it has coordinates
+                if points[i][0] is not None and points[i][1] is not None:
+                    current_segment.append([points[i][0], points[i][1]])
+            if len(current_segment) > 1:
                 segments.append(current_segment)
         paths[flight] = segments
 
     # Pripravi podatke za JSON response
     active_latest_df = active_latest_df.replace({pd.NA: None})
-    all_latest_df = all_latest_df.replace({pd.NA: None})
+    all_latest_df = all_latest_df.sort_values("timestamp", ascending=False).replace({pd.NA: None})
 
     aircraft = active_latest_df.to_dict(orient="records")
     all_aircraft = all_latest_df.to_dict(orient="records")

@@ -211,9 +211,9 @@ async def get_collated_data():
     )
 
     active_latest_df = active_latest_df.replace({pd.NA: None})
-    planes = active_latest_df.to_dict(orient="records")
+    aircraft = active_latest_df.to_dict(orient="records")
 
-    return {"planes": planes, "paths": paths}
+    return {"aircraft": aircraft, "paths": paths}
 
 
 @app.get("/api/history/dates")

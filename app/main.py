@@ -14,6 +14,8 @@ from contextlib import asynccontextmanager
 from FlightRadar24 import FlightRadar24API
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
+import math
+import numpy as np
 
 INFLUX_URL = "http://influxdb:8086"
 try:
@@ -42,6 +44,43 @@ flight_uuids = {}
 fr_api = FlightRadar24API()
 
 
+def _ensure_live_history_schema():
+    """Guarantee the cache has the columns we later query against."""
+    global live_history
+    required_columns = ["timestamp", "flight", "hex", "lat", "lon"]
+    for col in required_columns:
+        if col not in live_history.columns:
+            live_history[col] = pd.Series(dtype="object")
+
+
+def _normalize_aircraft_payload(payload: dict) -> pd.DataFrame:
+    """Convert an ADSB/collated payload into a safe dataframe.
+
+    The ADSB container may omit `flight` for many aircraft and provides a top-level
+    `now` field rather than per-row timestamps. This helper stamps every row with a
+    timestamp derived from `now` and falls back to `hex` when `flight` is missing.
+    """
+    aircraft = payload.get("aircraft", [])
+    if not isinstance(aircraft, list) or not aircraft:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(aircraft)
+    if df.empty:
+        return df
+
+    payload_now = payload.get("now", None)
+    ts = pd.to_datetime(payload_now, unit="s", errors="coerce") if payload_now is not None else pd.NaT
+    if pd.isna(ts):
+        ts = pd.Timestamp.now()
+
+    df["timestamp"] = ts
+    if "flight" not in df.columns:
+        df["flight"] = df.get("hex", "")
+    df["flight"] = df["flight"].fillna("").astype(str).str.strip()
+    df.loc[df["flight"].isin(["", "None", "nan"]), "flight"] = df.get("hex", "").fillna("").astype(str).str.strip()
+    return df
+
+
 def init_db():
     try:
         with engine.begin() as conn:
@@ -67,6 +106,7 @@ async def fetch_live_data():
         try:
             if not db_ready:
                 db_ready = init_db()
+            _ensure_live_history_schema()
 
             # Try fetching a single collated JSON from the server
             try:
@@ -74,7 +114,7 @@ async def fetch_live_data():
                 if response.status_code == 200 and response.text.strip():
                     data = response.json()
                     if "aircraft" in data:
-                        df = pd.DataFrame(data["aircraft"])
+                        df = _normalize_aircraft_payload(data)
                         if not df.empty and "lat" in df.columns:
                             df = df.dropna(subset=["lat", "lon"])
                             now = pd.Timestamp.now()
@@ -158,16 +198,21 @@ async def fetch_live_data():
                                     print(f"Napaka InfluxDB: {e}")
                             else:
                                 fallback_df = df.copy()
-                                fallback_df["timestamp"] = now
+                                fallback_df["timestamp"] = (
+                                    pd.Timestamp.now()
+                                    if "timestamp" not in fallback_df.columns
+                                    else fallback_df["timestamp"]
+                                )
                                 if "flight" not in fallback_df.columns:
                                     fallback_df["flight"] = fallback_df.get("hex", "")
-                                live_history = pd.concat([live_history, fallback_df])
+                                live_history = pd.concat([live_history, fallback_df], ignore_index=True)
             except Exception as e:
                 print(f"Napaka fetching collated data: {e}")
 
             # Da preprečimo preveliko rabo pomnilnika, ohranimo zadnjih 24 ur (namesto le 5 minut)
             cutoff = pd.Timestamp.now() - pd.Timedelta(hours=24)
-            live_history = live_history[live_history["timestamp"] >= cutoff]
+            if not live_history.empty and "timestamp" in live_history.columns:
+                live_history = live_history[live_history["timestamp"] >= cutoff]
         except Exception as e:
             print(f"Napaka ReadSB: {e}")
 
@@ -178,7 +223,7 @@ async def update_flight_routes():
     global flight_routes_cache
     while True:
         try:
-            if not live_history.empty:
+            if not live_history.empty and "timestamp" in live_history.columns and "flight" in live_history.columns:
                 # Get unique flight calls from the last hour
                 recent_cutoff = pd.Timestamp.now() - pd.Timedelta(hours=1)
                 recent_flights = live_history[live_history["timestamp"] >= recent_cutoff]["flight"].dropna().unique()
@@ -246,8 +291,19 @@ async def get_collated_data():
     if live_history.empty:
         return {"planes": [], "paths": {}}
 
+    _ensure_live_history_schema()
+    latest_source = live_history.copy()
+    latest_source["timestamp"] = pd.to_datetime(latest_source["timestamp"], errors="coerce")
+    latest_source["flight"] = latest_source["flight"].fillna("").astype(str).str.strip()
+    latest_source.loc[latest_source["flight"].isin(["", "None", "nan"]), "flight"] = (
+        latest_source.get("hex", "").fillna("").astype(str).str.strip()
+    )
+    latest_source = latest_source.dropna(subset=["timestamp"])
+    if latest_source.empty:
+        return {"planes": [], "paths": {}}
+
     # Pridobi nazadnje videno lokacijo vseh letal
-    latest_df = live_history.sort_values("timestamp").groupby("flight").tail(1).copy()
+    latest_df = latest_source.sort_values("timestamp").groupby("flight").tail(1).copy()
 
     # Kot aktivna obravnavamo samo tista letala, ki smo jih obravnavali v zadnjih 5 minutah
     active_cutoff = pd.Timestamp.now() - pd.Timedelta(minutes=5)
@@ -258,7 +314,7 @@ async def get_collated_data():
         return {"planes": [], "paths": {}}
 
     # Prikažemo CELOTNO zgodovino (do 24ur iz predpomnilnika) samo za TRENUTNO AKTIVNA letala
-    active_history = live_history[live_history["flight"].isin(active_flights)]
+    active_history = latest_source[latest_source["flight"].isin(active_flights)]
     paths = (
         active_history.sort_values("timestamp")
         .dropna(subset=["lat", "lon"])
@@ -267,15 +323,57 @@ async def get_collated_data():
         .to_dict()
     )
 
+    # Sanitize paths: convert numpy types to Python floats and drop invalid points
+    sanitized_paths = {}
+    for flt, pts in (paths or {}).items():
+        good_pts = []
+        for p in pts:
+            # p may be a list/ndarray like [lat, lon]
+            try:
+                lat = float(p[0])
+                lon = float(p[1])
+            except Exception:
+                continue
+            if not (math.isfinite(lat) and math.isfinite(lon)):
+                continue
+            good_pts.append([lat, lon])
+        sanitized_paths[flt] = good_pts
+
     active_latest_df = active_latest_df.replace({pd.NA: None})
     planes = active_latest_df.to_dict(orient="records")
+
+    # Sanitize plane records: replace NaN/inf with None and coerce numpy types
+    def _sanitize_obj(obj):
+        if isinstance(obj, dict):
+            return {k: _sanitize_obj(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_sanitize_obj(v) for v in obj]
+        # pandas/ numpy missing
+        try:
+            if pd.isna(obj):
+                return None
+        except Exception:
+            pass
+        # numeric types
+        if isinstance(obj, (int, float, np.number)):
+            try:
+                f = float(obj)
+                if not math.isfinite(f):
+                    return None
+                return f
+            except Exception:
+                return None
+        return obj
+
     for p in planes:
         flight_call = str(p.get("flight", "")).strip()
         route = flight_routes_cache.get(flight_call, {"origin": "?", "destination": "?"})
         p["route_origin"] = route["origin"]
         p["route_dest"] = route["destination"]
+        # sanitize each record in-place
+    planes = [_sanitize_obj(p) for p in planes]
 
-    return {"planes": planes, "paths": paths}
+    return {"planes": planes, "paths": sanitized_paths}
 
 
 @app.get("/api/history/dates")

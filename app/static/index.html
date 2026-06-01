@@ -342,7 +342,7 @@
                 polylines[hex] = [];
             }
             // Redraw paths for all planes based on current selection
-            lastData.planes.forEach(p => {
+            lastData.aircraft.forEach(p => {
                 updateFlightPath(p, lastData.paths, mode === 'history');
             });
         }

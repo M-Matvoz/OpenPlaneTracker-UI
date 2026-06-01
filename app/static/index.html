@@ -110,12 +110,22 @@
         .plane-svg {
             width: 30px;
             height: 30px;
-            fill: red;
+            fill: #f1c40f;
             filter: drop-shadow(0px 0px 1px #fff);
+            transition: fill 0.2s ease;
+            /* Gladka sprememba barve */
         }
 
         .plane-svg.history {
-            fill: blue;
+            fill: #3498db;
+        }
+
+        /* POPRAVEK: Barva za izbrano letalo (temno oranžna) */
+        .plane-svg.selected-plane {
+            fill: #d35400 !important;
+            /* Temno oranžna (Pumpkin) */
+            filter: drop-shadow(0px 0px 3px #fff);
+            /* Malo močnejši sij, da izstopa */
         }
 
         #history-panel {
@@ -218,10 +228,15 @@
 
         const planeSvg = `<svg viewBox="0 0 24 24" class="plane-svg {CLASS}"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2 A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg>`;
 
-        function getPlaneIcon(track, isHistory) {
+        function getPlaneIcon(track, isHistory, isSelected) {
+            // Sestavimo razrede: če je izbran, dodamo 'selected-plane', če je zgodovina, dodamo 'history'
+            let classes = [];
+            if (isHistory) classes.push('history');
+            if (isSelected) classes.push('selected-plane');
+
             return L.divIcon({
                 html: `<div style="transform: rotate(${track}deg); transform-origin: center;">` +
-                    planeSvg.replace('{CLASS}', isHistory ? 'history' : '') + `</div>`,
+                    planeSvg.replace('{CLASS}', classes.join(' ')) + `</div>`,
                 className: 'plane-icon',
                 iconSize: [30, 30],
                 iconAnchor: [15, 15]
@@ -264,9 +279,11 @@
             data.aircraft.forEach(p => {
                 let track = p.track || 0;
 
+                let isSelected = (p.hex === selectedFlightHex);
+
                 // Add/update marker
                 if (!markers[p.hex]) {
-                    markers[p.hex] = L.marker([p.lat, p.lon], { icon: getPlaneIcon(track, isHistory) }).addTo(map)
+                    markers[p.hex] = L.marker([p.lat, p.lon], { icon: getPlaneIcon(track, isHistory, isSelected) }).addTo(map)
                         .bindPopup(`<b>Fl: ${p.flight || p.hex}</b><br>Alt: ${p.alt_baro}<br>GS: ${p.gs}`);
 
                     // POPRAVEK: Uporabimo Leafletov dogodek 'e', da ustavimo širjenje klika na zemljevid
@@ -276,7 +293,7 @@
                     });
                 } else {
                     markers[p.hex].setLatLng([p.lat, p.lon]);
-                    markers[p.hex].setIcon(getPlaneIcon(track, isHistory));
+                    markers[p.hex].setIcon(getPlaneIcon(track, isHistory, isSelected));
                     markers[p.hex].setPopupContent(`<b>Fl: ${p.flight || p.hex}</b><br>Alt: ${p.alt_baro}<br>GS: ${p.gs}`);
                 }
 
@@ -363,6 +380,13 @@
             // Redraw paths for all planes based on current selection
             lastData.aircraft.forEach(p => {
                 updateFlightPath(p, lastData.paths, mode === 'history');
+
+                // POPRAVEK: Ko ročno rišemo poti ob kliku, takoj posodobimo tudi barvo markerja na zemljevidu
+                if (markers[p.hex]) {
+                    let track = p.track || 0;
+                    let isSelected = (p.hex === selectedFlightHex);
+                    markers[p.hex].setIcon(getPlaneIcon(track, mode === 'history', isSelected));
+                }
             });
         }
 

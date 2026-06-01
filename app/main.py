@@ -70,8 +70,8 @@ async def fetch_live_data():
                 data = response.json()
                 print(f"Fetched data: {data}")
 
-                if data and data.get("planes"):
-                    new_data_df = pd.DataFrame(data["planes"])
+                if data and data.get("aircraft"):
+                    new_data_df = pd.DataFrame(data["aircraft"])
                     if not new_data_df.empty and "lat" in new_data_df.columns:
                         new_data_df = new_data_df.dropna(subset=["lat", "lon"])
                         now = pd.Timestamp.now()

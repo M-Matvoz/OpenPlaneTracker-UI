@@ -219,8 +219,12 @@
         }
 
         function updateMap(data, isHistory = false) {
+            if (!data || !data.aircraft) {
+                console.error("Invalid data received:", data);
+                return;
+            }
             // Remove missing
-            let currentHexes = new Set(data.planes.map(p => p.hex));
+            let currentHexes = new Set(data.aircraft.map(p => p.hex));
             for (let hex in markers) {
                 if (!currentHexes.has(hex)) {
                     map.removeLayer(markers[hex]);
@@ -236,7 +240,7 @@
             const listDiv = document.getElementById('flight-list');
             listDiv.innerHTML = '';
 
-            data.planes.forEach(p => {
+            data.aircraft.forEach(p => {
                 let track = p.track || 0;
 
                 // Add marker
@@ -265,9 +269,9 @@
             updateSelectionHighlight();
 
             if (isHistory) {
-                document.getElementById('hist-count').innerText = `Zaznanih letal: ${data.planes.length}`;
+                document.getElementById('hist-count').innerText = `Zaznanih letal: ${data.aircraft.length}`;
             } else {
-                document.getElementById('live-count').innerText = `Zaznanih letal: ${data.planes.length}`;
+                document.getElementById('live-count').innerText = `Zaznanih letal: ${data.aircraft.length}`;
             }
         }
 

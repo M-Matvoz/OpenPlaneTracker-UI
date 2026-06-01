@@ -68,7 +68,7 @@ async def fetch_live_data():
                 response = await client.get(COLLATED_URL)
                 response.raise_for_status()
                 data = response.json()
-                print(f"Fetched data: {data}")
+                # print(f"Fetched data: {data}")
 
                 if data and data.get("aircraft"):
                     new_data_df = pd.DataFrame(data["aircraft"])

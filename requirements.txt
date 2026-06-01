@@ -1,8 +1,8 @@
 fastapi
 uvicorn
+python-multipart
 pandas
-requests
-SQLAlchemy>=2.0
-psycopg2-binary>=2.9
-beautifulsoup4
+psycopg2-binary
+SQLAlchemy
 influxdb-client
+httpx

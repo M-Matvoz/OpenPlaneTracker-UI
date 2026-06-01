@@ -190,21 +190,27 @@ async def get_collated_data():
     if live_history.empty:
         return {"aircraft": [], "all_aircraft": [], "paths": {}}
 
-    # Pridobi nazadnje videno lokacijo vseh letal v zadnjih 24 urah
-    all_latest_df = live_history.sort_values("timestamp").groupby("flight").tail(1).copy()
+    # 1. Pridobi nazadnje videno lokacijo vseh letal v zadnjih 24 urah
+    all_latest_df = (
+        live_history.sort_values("timestamp").groupby("flight").tail(1).copy()
+    )
 
-    # Kot aktivna obravnavamo samo tista letala, ki smo jih obravnavali v zadnjih 5 minutah
+    # 2. Kot aktivna obravnavamo samo tista letala, ki smo jih opazili v zadnjih 5 minutah
     active_cutoff = pd.Timestamp.now() - pd.Timedelta(minutes=5)
-    active_latest_df = all_latest_df[all_latest_df["timestamp"] >= active_cutoff].copy()
+    active_latest_df = all_latest_df[
+        all_latest_df["timestamp"] >= active_cutoff
+    ].copy()
 
     active_flights = active_latest_df["flight"].unique()
 
-    # Zgodovina poti samo za aktivna letala
+    # 3. Zgodovina poti samo za aktivna letala
     active_history = live_history[live_history["flight"].isin(active_flights)]
 
     # Process paths to include segments for gaps
     paths = {}
-    for flight, group in active_history.sort_values("timestamp").groupby("flight"):
+    for flight, group in (
+        active_history.sort_values("timestamp").groupby("flight")
+    ):
         points = group[["lat", "lon", "timestamp"]].to_numpy()
         segments = []
         if len(points) > 0:
@@ -217,33 +223,42 @@ async def get_collated_data():
                     if len(current_segment) > 1:
                         segments.append(current_segment)
                     current_segment = []
-                # Preverimo, da koordinate niso NaN ali None
-                if (
-                    pd.notnull(points[i][0])
-                    and pd.notnull(points[i][1])
-                    and not (isinstance(points[i][0], float) and np.isnan(points[i][0]))
-                ):
+
+                if pd.notnull(points[i][0]) and pd.notnull(points[i][1]):
                     current_segment.append([points[i][0], points[i][1]])
             if len(current_segment) > 1:
                 segments.append(current_segment)
         paths[flight] = segments
 
-    # REŠITEV: Pretvorba NaN v None in Timestamp v ISO string (ali izbris), da bo JSON compliant
-    # Namesto .replace({pd.NA: None}) uporabimo kombinacijo, ki ulije mir v JSON encoder
-    active_latest_df = active_latest_df.astype(object).where(pd.notnull(active_latest_df), None)
-    all_latest_df = (
-        all_latest_df.sort_values("timestamp", ascending=False).astype(object).where(pd.notnull(all_latest_df), None)
-    )
+    # 4. REŠITEV ZA MASK & SIZE ERROR:
+    # Namesto zapletenega maskiranja nad sortiranimi podatki uporabimo enostaven .replace()
+    # Pred pretvorbo v slovar poskrbimo, da se Timestamp objekti spremenijo v ISO nize
+    for df in [active_latest_df, all_latest_df]:
+        if "timestamp" in df.columns:
+            df["timestamp"] = df["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%S")
 
+    # Sortiramo all_latest_df šele sedaj, ko so tipi v stolpcih enotni
+    all_latest_df = all_latest_df.sort_values("timestamp", ascending=False)
+
+    # Pretvorimo v native Python tipe (Pandas NaN avtomatsko postane float('nan'))
     aircraft = active_latest_df.to_dict(orient="records")
     all_aircraft = all_latest_df.to_dict(orient="records")
 
-    # Počistimo še specifične elemente znotraj listov (npr. Timestamp objekte)
-    for ac in aircraft + all_aircraft:
-        if ac.get("timestamp"):
-            ac["timestamp"] = ac["timestamp"].isoformat()
+    # Na nivoju čistega Pythona zamenjamo vse NaN z None (kar bo v JSON postalo null)
+    # To popolnoma zaobide kaprice Pandas encoderja
+    def clean_nan_values(records_list):
+        for record in records_list:
+            for key, value in record.items():
+                if pd.isna(value):  # Ulovi NaN, None in NaT
+                    record[key] = None
+        return records_list
 
-    print(f"Active aircraft: {len(aircraft)}, All aircraft: {len(all_aircraft)}, Paths: {len(paths)}")
+    aircraft = clean_nan_values(aircraft)
+    all_aircraft = clean_nan_values(all_aircraft)
+
+    print(
+        f"Active aircraft: {len(aircraft)}, All aircraft: {len(all_aircraft)}, Paths: {len(paths)}"
+    )
 
     return {"aircraft": aircraft, "all_aircraft": all_aircraft, "paths": paths}
 

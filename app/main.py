@@ -230,6 +230,7 @@ async def get_collated_data():
 
     aircraft = active_latest_df.to_dict(orient="records")
     all_aircraft = all_latest_df.to_dict(orient="records")
+    print(f"Active aircraft: {aircraft}, All aircraft: {all_aircraft}, Paths: {paths}")
 
     return {"aircraft": aircraft, "all_aircraft": all_aircraft, "paths": paths}
 

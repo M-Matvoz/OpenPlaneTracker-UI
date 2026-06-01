@@ -220,10 +220,15 @@
 
         function updateMap(data, isHistory = false) {
             if (!data || !data.aircraft) {
-                console.error("Invalid data received:", data);
+                console.error("Invalid data received for map:", data);
                 return;
             }
-            // Remove missing
+            if (!data || !data.all_aircraft) {
+                console.error("Invalid data received for list:", data);
+                return;
+            }
+
+            // Remove missing markers from map
             let currentHexes = new Set(data.aircraft.map(p => p.hex));
             for (let hex in markers) {
                 if (!currentHexes.has(hex)) {
@@ -236,14 +241,24 @@
                 }
             }
 
-            // Update List
+            // Update Full List in sidebar
             const listDiv = document.getElementById('flight-list');
             listDiv.innerHTML = '';
+            data.all_aircraft.forEach(p => {
+                let item = document.createElement('div');
+                item.className = 'flight-item';
+                item.id = `flight-item-${p.hex}`;
+                item.innerHTML = `<b>${p.flight || p.hex}</b><br>Alt: ${p.alt_baro || 'N/A'} ft<br>GS: ${p.gs || 'N/A'}`;
+                item.onclick = () => toggleFlightSelection(p.hex);
+                listDiv.appendChild(item);
+            });
 
+
+            // Update active aircraft on map
             data.aircraft.forEach(p => {
                 let track = p.track || 0;
 
-                // Add marker
+                // Add/update marker
                 if (!markers[p.hex]) {
                     markers[p.hex] = L.marker([p.lat, p.lon], { icon: getPlaneIcon(track, isHistory) }).addTo(map)
                         .bindPopup(`<b>Fl: ${p.flight || p.hex}</b><br>Alt: ${p.alt_baro}<br>GS: ${p.gs}`);
@@ -256,14 +271,6 @@
 
                 // Update paths based on selection
                 updateFlightPath(p, data.paths, isHistory);
-
-                // Update List Item
-                let item = document.createElement('div');
-                item.className = 'flight-item';
-                item.id = `flight-item-${p.hex}`;
-                item.innerHTML = `<b>${p.flight || p.hex}</b><br>Alt: ${p.alt_baro} ft<br>Knot: ${p.gs}`;
-                item.onclick = () => toggleFlightSelection(p.hex);
-                listDiv.appendChild(item);
             });
 
             updateSelectionHighlight();
@@ -276,7 +283,7 @@
         }
 
         function updateFlightPath(plane, allPaths, isHistory) {
-            const flightId = plane.flight;
+            const flightId = plane.flight || plane.hex;
             const hex = plane.hex;
 
             // Clear existing polylines for this flight

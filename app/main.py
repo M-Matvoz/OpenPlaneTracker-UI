@@ -187,33 +187,49 @@ async def get_index():
 @app.get("/api/collated")
 async def get_collated_data():
     if live_history.empty:
-        return {"planes": [], "paths": {}}
+        return {"aircraft": [], "all_aircraft": [], "paths": {}}
 
-    # Pridobi nazadnje videno lokacijo vseh letal
-    latest_df = live_history.sort_values("timestamp").groupby("flight").tail(1).copy()
+    # Pridobi nazadnje videno lokacijo vseh letal v zadnjih 24 urah
+    all_latest_df = live_history.sort_values("timestamp").groupby("flight").tail(1).copy()
 
     # Kot aktivna obravnavamo samo tista letala, ki smo jih obravnavali v zadnjih 5 minutah
     active_cutoff = pd.Timestamp.now() - pd.Timedelta(minutes=5)
-    active_latest_df = latest_df[latest_df["timestamp"] >= active_cutoff].copy()
+    active_latest_df = all_latest_df[all_latest_df["timestamp"] >= active_cutoff].copy()
+
     active_flights = active_latest_df["flight"].unique()
 
-    if active_flights.size == 0:
-        return {"planes": [], "paths": {}}
-
-    # Prikažemo CELOTNO zgodovino (do 24ur iz predpomnilnika) samo za TRENUTNO AKTIVNA letala
+    # Zgodovina poti samo za aktivna letala
     active_history = live_history[live_history["flight"].isin(active_flights)]
-    paths = (
-        active_history.sort_values("timestamp")
-        .dropna(subset=["lat", "lon"])
-        .groupby("flight")
-        .apply(lambda x: x[["lat", "lon"]].values.tolist(), include_groups=False)
-        .to_dict()
-    )
 
+    # Process paths to include segments for gaps
+    paths = {}
+    for flight, group in active_history.sort_values("timestamp").groupby("flight"):
+        points = group[["lat", "lon", "timestamp"]].to_numpy()
+        segments = []
+        if len(points) > 0:
+            current_segment = [[points[0][0], points[0][1]]]
+            for i in range(1, len(points)):
+                # Ensure timestamps are timezone-aware for subtraction
+                ts1 = pd.to_datetime(points[i - 1][2]).tz_convert(None)
+                ts2 = pd.to_datetime(points[i][2]).tz_convert(None)
+                time_diff = (ts2 - ts1).total_seconds()
+                if time_diff > 10:
+                    if len(current_segment) > 0:
+                        segments.append(current_segment)
+                    current_segment = []
+                current_segment.append([points[i][0], points[i][1]])
+            if len(current_segment) > 0:
+                segments.append(current_segment)
+        paths[flight] = segments
+
+    # Pripravi podatke za JSON response
     active_latest_df = active_latest_df.replace({pd.NA: None})
-    aircraft = active_latest_df.to_dict(orient="records")
+    all_latest_df = all_latest_df.replace({pd.NA: None})
 
-    return {"aircraft": aircraft, "paths": paths}
+    aircraft = active_latest_df.to_dict(orient="records")
+    all_aircraft = all_latest_df.to_dict(orient="records")
+
+    return {"aircraft": aircraft, "all_aircraft": all_aircraft, "paths": paths}
 
 
 @app.get("/api/history/dates")

@@ -194,6 +194,16 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
         let map = L.map('map').setView([46.0, 14.5], 8);
+
+        map.on('click', function (e) {
+            // Če kliknemo na prazno mesto na zemljevidu, počistimo izbiro
+            if (selectedFlightHex !== null) {
+                selectedFlightHex = null;
+                redrawAllPaths();
+                updateSelectionHighlight();
+            }
+        });
+
         L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
             attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
         }).addTo(map);
@@ -258,7 +268,12 @@
                 if (!markers[p.hex]) {
                     markers[p.hex] = L.marker([p.lat, p.lon], { icon: getPlaneIcon(track, isHistory) }).addTo(map)
                         .bindPopup(`<b>Fl: ${p.flight || p.hex}</b><br>Alt: ${p.alt_baro}<br>GS: ${p.gs}`);
-                    markers[p.hex].on('click', () => toggleFlightSelection(p.hex));
+
+                    // POPRAVEK: Uporabimo Leafletov dogodek 'e', da ustavimo širjenje klika na zemljevid
+                    markers[p.hex].on('click', (e) => {
+                        L.DomEvent.stopPropagation(e);
+                        toggleFlightSelection(p.hex);
+                    });
                 } else {
                     markers[p.hex].setLatLng([p.lat, p.lon]);
                     markers[p.hex].setIcon(getPlaneIcon(track, isHistory));
@@ -315,12 +330,12 @@
 
         function toggleFlightSelection(hex) {
             if (selectedFlightHex === hex) {
-                selectedFlightHex = null; // Deselect
+                selectedFlightHex = null; // Deselect, če kliknemo isto letalo
             } else {
                 selectedFlightHex = hex;
             }
-            // This will trigger a full redraw of paths on the next data refresh
-            // To make it instant, we can call a redraw function here if we store the last data object
+
+            // Takoj osvežimo poti in sidebar, da ni zamika do naslednjega fetch-a
             redrawAllPaths();
             updateSelectionHighlight();
         }

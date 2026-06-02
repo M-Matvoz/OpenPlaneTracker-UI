@@ -371,40 +371,6 @@
                 }
             }
 
-            // // Update Full List in sidebar
-            // const listDiv = document.getElementById('flight-list');
-            // listDiv.innerHTML = '';
-
-            // let visibleAircraft = [];
-
-            // for (let hex in markers) {
-            //     // Poiščemo najnovejše podatke za ta hex v vseh prejetih letalih (tudi če so za sekundo izginila iz 'aircraft')
-            //     let p = data.aircraft.find(a => a.hex === hex) || data.all_aircraft.find(a => a.hex === hex);
-
-            //     if (p) {
-            //         visibleAircraft.push(p);
-            //     } else {
-            //         // Če podatkov sploh ni več v 24-urni zgodovini, uporabimo osnovni hex
-            //         visibleAircraft.push({ hex: hex, flight: hex, alt_baro: 'N/A', gs: 'N/A' });
-            //     }
-            // }
-
-            // visibleAircraft.sort((a, b) => {
-            //     let nameA = (a.flight || a.hex).toString().trim();
-            //     let nameB = (b.flight || b.hex).toString().trim();
-            //     return nameA.localeCompare(nameB);
-            // });
-
-            // visibleAircraft.forEach(p => {
-            //     let item = document.createElement('div');
-            //     item.className = 'flight-item';
-            //     item.id = `flight-item-${p.hex}`;
-            //     item.innerHTML = `<b>${p.flight || p.hex}</b><br>Alt: ${p.alt_baro || 'N/A'} ft<br>GS: ${p.gs || 'N/A'}`;
-            //     item.onclick = () => toggleFlightSelection(p.hex);
-            //     listDiv.appendChild(item);
-            // });
-
-
             // Update active aircraft on map
             data.aircraft.forEach(p => {
                 let track = p.track || 0;
@@ -431,8 +397,6 @@
                     markers[p.hex].setPopupContent(`<b>${displayName}</b>`);
                 }
 
-                // Update paths based on selection
-                updateFlightPath(p, data.paths, isHistory);
             });
 
             // Update Full List in sidebar
@@ -478,36 +442,37 @@
             } else {
                 document.getElementById('live-count').innerText = `Zaznanih letal: ${data.aircraft.length}`;
             }
+            redrawAllPaths();
         }
 
-        function updateFlightPath(p, pathsData, isHistory) {
-            if (!pathsData) return;
+        // function updateFlightPath(p, pathsData, isHistory) {
+        //     if (!pathsData) return;
 
-            // POTI: Sedaj so na backendu poenotene in vedno shranjene pod hex kodo!
-            let flightSegments = pathsData[p.hex];
+        //     // POTI: Sedaj so na backendu poenotene in vedno shranjene pod hex kodo!
+        //     let flightSegments = pathsData[p.hex];
 
-            if (p.hex !== selectedFlightHex) {
-                if (polylines[p.hex]) {
-                    polylines[p.hex].forEach(pl => map.removeLayer(pl));
-                    polylines[p.hex] = [];
-                }
-                return;
-            }
+        //     if (p.hex !== selectedFlightHex) {
+        //         if (polylines[p.hex]) {
+        //             polylines[p.hex].forEach(pl => map.removeLayer(pl));
+        //             polylines[p.hex] = [];
+        //         }
+        //         return;
+        //     }
 
-            if (flightSegments && flightSegments.length > 0) {
-                if (!polylines[p.hex]) polylines[p.hex] = [];
+        //     if (flightSegments && flightSegments.length > 0) {
+        //         if (!polylines[p.hex]) polylines[p.hex] = [];
 
-                polylines[p.hex].forEach(pl => map.removeLayer(pl));
-                polylines[p.hex] = [];
+        //         polylines[p.hex].forEach(pl => map.removeLayer(pl));
+        //         polylines[p.hex] = [];
 
-                flightSegments.forEach(segment => {
-                    if (segment.length < 2) return;
-                    let color = isHistory ? '#3498db' : '#d35400';
-                    let pl = L.polyline(segment, { color: color, weight: 3, opacity: 0.8 }).addTo(map);
-                    polylines[p.hex].push(pl);
-                });
-            }
-        }
+        //         flightSegments.forEach(segment => {
+        //             if (segment.length < 2) return;
+        //             let color = isHistory ? '#3498db' : '#d35400';
+        //             let pl = L.polyline(segment, { color: color, weight: 3, opacity: 0.8 }).addTo(map);
+        //             polylines[p.hex].push(pl);
+        //         });
+        //     }
+        // }
 
         function updateTelemetryCard(data) {
             if (!selectedFlightHex || !data) return;
@@ -571,21 +536,61 @@
         function redrawAllPaths() {
             if (!lastData) return;
             // Clear all polylines
+            // 1. Popolnoma počistimo vse prejšnje izrisane polylines z zemljevida
             for (const hex in polylines) {
-                polylines[hex].forEach(pl => map.removeLayer(pl));
-                polylines[hex] = [];
+                if (polylines[hex]) {
+                    polylines[hex].forEach(pl => map.removeLayer(pl));
+                }
             }
-            // Redraw paths for all planes based on current selection
-            lastData.aircraft.forEach(p => {
-                updateFlightPath(p, lastData.paths, mode === 'history');
+            polylines = {};
 
-                // POPRAVEK: Ko ročno rišemo poti ob kliku, takoj posodobimo tudi barvo markerja na zemljevidu
+            // Posodobimo ikone markerjev glede na trenutno selekcijo
+            lastData.aircraft.forEach(p => {
                 if (markers[p.hex]) {
                     let track = p.track || 0;
                     let isSelected = (p.hex === selectedFlightHex);
                     markers[p.hex].setIcon(getPlaneIcon(track, mode === 'history', isSelected));
                 }
             });
+
+            // 2. Če nimamo izbranega nobenega letala, ne rišemo nobenih poti
+            if (!selectedFlightHex) return;
+
+            let isHistoryMode = (mode === 'history');
+            let color = isHistoryMode ? '#3498db' : '#d35400';
+
+            // 3. Izris NAVADNIH polnih segmentov za izbrano letalo
+            if (lastData.paths && lastData.paths[selectedFlightHex]) {
+                let segments = lastData.paths[selectedFlightHex];
+                if (!polylines[selectedFlightHex]) polylines[selectedFlightHex] = [];
+
+                segments.forEach(segment => {
+                    if (segment.length < 2) return;
+                    let pl = L.polyline(segment, {
+                        color: color,
+                        weight: 3,
+                        opacity: 0.8
+                    }).addTo(map);
+                    polylines[selectedFlightHex].push(pl);
+                });
+            }
+
+            // 4. Izris ČRTKANIH segmentov (izpad signala) za izbrano letalo
+            if (lastData.dashed_paths && lastData.dashed_paths[selectedFlightHex]) {
+                let d_segments = lastData.dashed_paths[selectedFlightHex];
+                if (!polylines[selectedFlightHex]) polylines[selectedFlightHex] = [];
+
+                d_segments.forEach(segment => {
+                    if (segment.length < 2) return;
+                    let pl = L.polyline(segment, {
+                        color: color,
+                        weight: 2.5,
+                        opacity: 0.6,
+                        dashArray: '6, 8' // 6px črta, 8px luknja
+                    }).addTo(map);
+                    polylines[selectedFlightHex].push(pl);
+                });
+            }
         }
 
         async function fetchLive() {

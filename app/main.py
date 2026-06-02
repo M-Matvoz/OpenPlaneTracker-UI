@@ -189,7 +189,7 @@ async def get_index():
 @app.get("/live/collated")
 async def get_collated_data():
     if live_history.empty:
-        return {"aircraft": [], "all_aircraft": [], "paths": {}}
+        return {"aircraft": [], "all_aircraft": [], "paths": {}, "dashed_paths": {}}
 
     # 1. Pridobi nazadnje videno lokacijo vseh letal v zadnjih 24 urah
     all_latest_df = live_history.sort_values("timestamp").groupby("hex").tail(1).copy()
@@ -203,9 +203,13 @@ async def get_collated_data():
     active_history = live_history[live_history["hex"].isin(active_hexes)]
 
     paths = {}
+    dashed_paths = {}
+
     for hex_code, group in active_history.sort_values("timestamp").groupby("hex"):
         points = group[["lat", "lon", "timestamp"]].to_numpy()
         segments = []
+        d_segments = []
+
         if len(points) > 0:
             current_segment = [[points[0][0], points[0][1]]]
             for i in range(1, len(points)):
@@ -213,19 +217,22 @@ async def get_collated_data():
                 ts2 = pd.to_datetime(points[i][2]).tz_localize(None)
                 time_diff = (ts2 - ts1).total_seconds()
 
-                # Če je prekinitev daljša od 10 sekund, ustvari nov segment
                 if time_diff > 10:
                     if len(current_segment) > 1:
                         segments.append(current_segment)
+
+                    # Črtkana povezava
+                    d_segments.append([[points[i - 1][0], points[i - 1][1]], [points[i][0], points[i][1]]])
                     current_segment = []
 
                 if pd.notnull(points[i][0]) and pd.notnull(points[i][1]):
                     current_segment.append([points[i][0], points[i][1]])
+
             if len(current_segment) > 1:
                 segments.append(current_segment)
 
-        # Ključ v objektu paths bo sedaj pravilno HEX koda
         paths[hex_code] = segments
+        dashed_paths[hex_code] = d_segments
 
     # 4. REŠITEV ZA MASK & SIZE ERROR:
     # Namesto zapletenega maskiranja nad sortiranimi podatki uporabimo enostaven .replace()
@@ -251,6 +258,7 @@ async def get_collated_data():
         "aircraft": aircraft_list,
         "all_aircraft": all_aircraft_list,
         "paths": paths,
+        "dashed_paths": dashed_paths,
     }
 
 
@@ -340,23 +348,37 @@ async def get_history_data(target_time: str):
                     }
 
         # Formatiramo poti v segmente
+        # Formatiramo poti v segmente in črtkane segmente
         formatted_paths = {}
+        dashed_paths = {}
+
         for h, pts in paths_by_hex.items():
             pts.sort(key=lambda x: x["time"])
             segments = []
+            d_segments = []
+
             if pts:
                 curr_seg = [[pts[0]["lat"], pts[0]["lon"]]]
                 for i in range(1, len(pts)):
                     diff = (pts[i]["time"] - pts[i - 1]["time"]).total_seconds()
+
                     if diff > 10:
+                        # Zaključimo trenutni polni segment
                         if len(curr_seg) > 1:
                             segments.append(curr_seg)
+
+                        # Ustvarimo črtkani segment med zadnjo točko starega in prvo točko novega segmenta
+                        d_segments.append([[pts[i - 1]["lat"], pts[i - 1]["lon"]], [pts[i]["lat"], pts[i]["lon"]]])
+
                         curr_seg = []
+
                     curr_seg.append([pts[i]["lat"], pts[i]["lon"]])
+
                 if len(curr_seg) > 1:
                     segments.append(curr_seg)
-            formatted_paths[h] = segments
 
+            formatted_paths[h] = segments
+            dashed_paths[h] = d_segments
         # Očistimo začasni '_raw_time' pred pošiljanjem JSON-a
         aircraft_list = []
 
@@ -374,11 +396,12 @@ async def get_history_data(target_time: str):
                 pass
 
         return {
-            "aircraft": aircraft_list,  # Samo dejansko aktivna letala v tisti minuti
-            "all_aircraft": aircraft_list,  # Sinhronizirano s stransko vrstico
-            "paths": formatted_paths,  # Sledi (izrisane poti) pa pustimo za vsa letala v 30-min oknu
+            "aircraft": aircraft_list,
+            "all_aircraft": aircraft_list,
+            "paths": formatted_paths,
+            "dashed_paths": dashed_paths,  # DOLOČENO: dodamo črtkane poti
         }
 
     except Exception as e:
         print(f"Napaka v zgodovini: {e}")
-        return {"aircraft": [], "all_aircraft": [], "paths": {}}
+        return {"aircraft": [], "all_aircraft": [], "paths": {}, "dashed_paths": {}}

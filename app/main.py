@@ -12,10 +12,10 @@ import os
 import numpy as np
 import uvicorn
 import uuid
+import math
 from contextlib import asynccontextmanager
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
-from influxdb_client.client.flux_client import FluxRows
 
 INFLUX_URL = "http://influxdb:8086"
 try:
@@ -281,15 +281,6 @@ async def get_history_data(target_time: str):
         target_dt = datetime.fromisoformat(target_time)
         start_dt = target_dt - timedelta(minutes=30)
 
-        query = """
-            SELECT time, flight_uuid, flight_no, hex, lat, lon, alt_baro, gs, track
-            FROM flight_telemetry
-            WHERE time >= :start AND time <= :target
-        """
-
-        # Izvedemo poizvedbo v InfluxDB preko Pandas oz. influx klienta
-        # (Zaradi enostavnosti uporabimo obstoječo logiko v vaši skripti, ampak jo očistimo)
-
         flux_query = f"""
             from(bucket: "{INFLUX_BUCKET}")
             |> range(start: {start_dt.isoformat()}Z, stop: {target_dt.isoformat()}Z)
@@ -299,7 +290,6 @@ async def get_history_data(target_time: str):
 
         tables = influx_client.query_api().query(flux_query, org=INFLUX_ORG)
 
-        aircraft_list = []
         paths_by_hex = {}
         seen_hexes = {}
 
@@ -322,15 +312,14 @@ async def get_history_data(target_time: str):
                 if fl == "" or fl == h:
                     fl = None
 
-                # Shranjevanje poti pod HEX kodo
+                # POPRAVEK: Ključ za poti mora biti striktno HEX koda, ne Flight številka!
                 if h not in paths_by_hex:
                     paths_by_hex[h] = []
                 paths_by_hex[h].append({"lat": lat, "lon": lon, "time": t})
 
-                # Ohranimo samo najnovejši položaj za vsako letalo (marker)
+                # Ohranimo samo najnovejši položaj za vsako letalo v izbranem trenutku (marker)
                 if h not in seen_hexes or t > seen_hexes[h]["time"]:
                     seen_hexes[h] = {
-                        "time": t,
                         "hex": h,
                         "flight": fl,
                         "lat": lat,
@@ -338,9 +327,10 @@ async def get_history_data(target_time: str):
                         "alt_baro": None if alt is None or math.isnan(alt) else int(alt),
                         "gs": None if gs is None or math.isnan(gs) else int(gs),
                         "track": None if tr is None or math.isnan(tr) else tr,
+                        "time": t,  # Potrebujemo za primerjavo, kasneje pobrišemo
                     }
 
-        # Formatiramo poti v segmente, kot jih pričakuje frontend
+        # Formatiramo poti v segmente s prekinitevami, indeksirano s HEX kodo
         formatted_paths = {}
         for h, pts in paths_by_hex.items():
             pts.sort(key=lambda x: x["time"])
@@ -349,16 +339,23 @@ async def get_history_data(target_time: str):
                 curr_seg = [[pts[0]["lat"], pts[0]["lon"]]]
                 for i in range(1, len(pts)):
                     diff = (pts[i]["time"] - pts[i - 1]["time"]).total_seconds()
-                    if diff > 10:
-                        segments.append(curr_seg)
+                    if diff > 10:  # Časovna vrzel med točkami (prekinitev sledi)
+                        if len(curr_seg) > 1:
+                            segments.append(curr_seg)
                         curr_seg = []
                     curr_seg.append([pts[i]["lat"], pts[i]["lon"]])
-                segments.append(curr_seg)
+                if len(curr_seg) > 1:
+                    segments.append(curr_seg)
             formatted_paths[h] = segments
 
-        aircraft_list = list(seen_hexes.values())
+        # Očistimo 'time' ključ iz aircraft objektov, da ne povzroča težav s serializacijo
+        aircraft_list = []
+        for ac in seen_hexes.values():
+            ac.pop("time", None)
+            aircraft_list.append(ac)
 
         return {"aircraft": aircraft_list, "all_aircraft": aircraft_list, "paths": formatted_paths}
+
     except Exception as e:
         print(f"Napaka v zgodovini: {e}")
         return {"aircraft": [], "all_aircraft": [], "paths": {}}

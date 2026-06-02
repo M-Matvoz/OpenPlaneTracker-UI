@@ -272,17 +272,26 @@ async def get_history_dates():
 @app.get("/live/history/data")
 async def get_history_data(target_time: str):
     try:
-        # Rešitev za napačne ISO formate (odstranimo podvojene T-je, če pridejo s frontenda)
+        # Čiščenje niza, če bi se slučajno podvojil 'T'
         if target_time.count("T") > 1:
             parts = target_time.split("T")
             target_time = f"{parts[0]}T{parts[1]}"
 
+        # Parsiramo niz, ki sedaj vsebuje časovni pas (npr. +02:00)
         target_dt = datetime.fromisoformat(target_time)
-        start_dt = target_dt - timedelta(minutes=30)
 
+        # InfluxDB zahteva UTC čas v queryju, zato pretvorimo naš lokalni čas v UTC
+        target_utc = target_dt.astimezone(None).utcnow()  # ali krajše: target_dt.timestamp() pretvorjen v ISO
+        # Najbolj varna pot za pretvorbo kateregakoli datuma z offsetom v UTC niz za Influx:
+        target_utc_str = target_dt.astimezone(from_utc=False).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        start_dt = target_dt - timedelta(minutes=30)
+        start_utc_str = start_dt.astimezone(from_utc=False).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # Ustvarimo poizvedbo z eksplicitnimi UTC nizi, ki jih Influx razume
         flux_query = f"""
             from(bucket: "{INFLUX_BUCKET}")
-            |> range(start: {start_dt.isoformat()}Z, stop: {target_dt.isoformat()}Z)
+            |> range(start: {start_utc_str}, stop: {target_utc_str})
             |> filter(fn: (r) => r["_measurement"] == "flight_telemetry")
             |> pivot(rowKey:["_time", "flight_uuid", "hex", "flight_no"], columnKey: ["_field"], valueColumn: "_value")
         """
@@ -294,14 +303,15 @@ async def get_history_data(target_time: str):
 
         for table in tables:
             for record in table.records:
+                # Pravilno branje vseh vrednosti iz pivotiranega Flux zapisa preko .values.get()
                 h = record.values.get("hex")
                 fl = record.values.get("flight_no")
-                lat = record.get_value_by_key("lat")
-                lon = record.get_value_by_key("lon")
-                alt = record.get_value_by_key("alt_baro")
-                gs = record.get_value_by_key("gs")
-                tr = record.get_value_by_key("track")
-                t = record.get_time()
+                lat = record.values.get("lat")
+                lon = record.values.get("lon")
+                alt = record.values.get("alt_baro")
+                gs = record.values.get("gs")
+                tr = record.values.get("track")
+                t = record.get_time()  # .get_time() je pravilna metoda za časovno oznako
 
                 if not h or lat is None or lon is None or math.isnan(lat) or math.isnan(lon):
                     continue
@@ -311,15 +321,12 @@ async def get_history_data(target_time: str):
                 if fl == "" or fl == h:
                     fl = None
 
-                # POPRAVEK: Ključ za poti mora biti striktno HEX koda, ne Flight številka!
                 if h not in paths_by_hex:
                     paths_by_hex[h] = []
                 paths_by_hex[h].append({"lat": lat, "lon": lon, "time": t})
 
-                # Ohranimo samo najnovejši položaj za vsako letalo v izbranem trenutku (marker)
+                # Za primerjavo najnovejše točke uporabimo UTC čas 't'
                 if h not in seen_hexes or t > seen_hexes[h]["_raw_time"]:
-                    # t.astimezone(None) pretvori UTC čas iz Influxa v lokalni čas sistema (UTC+2)
-                    local_t = t.astimezone(None)
                     seen_hexes[h] = {
                         "hex": h,
                         "flight": fl,
@@ -328,11 +335,10 @@ async def get_history_data(target_time: str):
                         "alt_baro": None if alt is None or math.isnan(alt) else int(alt),
                         "gs": None if gs is None or math.isnan(gs) else int(gs),
                         "track": None if tr is None or math.isnan(tr) else tr,
-                        "time_str": local_t.strftime("%H:%M:%S"),  # Lokalni čas za frontend prikaz, če boš rabil
                         "_raw_time": t,
                     }
 
-        # Formatiramo poti v segmente s prekinitevami, indeksirano s HEX kodo
+        # Formatiramo poti v segmente
         formatted_paths = {}
         for h, pts in paths_by_hex.items():
             pts.sort(key=lambda x: x["time"])
@@ -341,7 +347,7 @@ async def get_history_data(target_time: str):
                 curr_seg = [[pts[0]["lat"], pts[0]["lon"]]]
                 for i in range(1, len(pts)):
                     diff = (pts[i]["time"] - pts[i - 1]["time"]).total_seconds()
-                    if diff > 10:  # Časovna vrzel med točkami (prekinitev sledi)
+                    if diff > 10:
                         if len(curr_seg) > 1:
                             segments.append(curr_seg)
                         curr_seg = []
@@ -350,7 +356,7 @@ async def get_history_data(target_time: str):
                     segments.append(curr_seg)
             formatted_paths[h] = segments
 
-        # Očistimo 'time' ključ iz aircraft objektov, da ne povzroča težav s serializacijo
+        # Očistimo začasni '_raw_time' pred pošiljanjem JSON-a
         aircraft_list = []
         for ac in seen_hexes.values():
             ac.pop("_raw_time", None)

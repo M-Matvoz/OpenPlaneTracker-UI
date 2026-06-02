@@ -598,17 +598,42 @@
         }
 
         async function fetchHistory() {
-            if (mode !== 'history') return;
-            let date = document.getElementById('hist-date').value;
-            let time = document.getElementById('hist-time').value;
-            if (!date || !time) return;
+            let dateInput = document.getElementById('hist-date');
+            let timeInput = document.getElementById('hist-time');
+            if (!dateInput.value || !timeInput.value) return;
 
-            let dt = `${date}T${time}`;
+            // Ustvarimo lokalni datum iz vnosnih polj
+            let localDt = new Date(`${dateInput.value} ${timeInput.value}`);
+            if (isNaN(localDt.getTime())) return;
+
+            // Pridobimo časovni zamik v minutah in ga pretvorimo v format +HH:MM ali -HH:MM
+            let tzOffset = -localDt.getTimezoneOffset();
+            let sign = tzOffset >= 0 ? '+' : '-';
+            let pad = (num) => String(Math.abs(num)).padStart(2, '0');
+            let offsetStr = `${sign}${pad(Math.floor(tzOffset / 60))}:${pad(tzOffset % 60)}`;
+
+            // Sestavimo polni ISO niz z lokalnim časovnim pasom (npr. 2026-06-02T12:34:56+02:00)
+            let year = localDt.getFullYear();
+            let month = String(localDt.getMonth() + 1).padStart(2, '0');
+            let day = String(localDt.getDate()).padStart(2, '0');
+            let hours = String(localDt.getHours()).padStart(2, '0');
+            let minutes = String(localDt.getMinutes()).padStart(2, '0');
+            let seconds = String(localDt.getSeconds()).padStart(2, '0');
+
+            let targetTime = `${year}-${month}-${day}T${hours}:${minutes}:${seconds}${offsetStr}`;
+
             try {
-                let res = await fetch(`/live/history/data?target_time=${dt}`);
-                lastData = await res.json();
-                updateMap(lastData, true);
-            } catch (e) { }
+                let r = await fetch(`/live/history/data?target_time=${encodeURIComponent(targetTime)}`);
+                let data = await r.json();
+
+                // Posodobimo globalno spremenljivko, ki jo uporablja preostali del aplikacije
+                lastData = data;
+
+                // Ponovno izrišemo letala in poti
+                renderAircraft();
+            } catch (err) {
+                console.error("Napaka pri pridobivanju zgodovinskih podatkov:", err);
+            }
         }
 
         async function toggleMode() {

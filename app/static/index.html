@@ -629,8 +629,7 @@
                 // Posodobimo globalno spremenljivko, ki jo uporablja preostali del aplikacije
                 lastData = data;
 
-                // Ponovno izrišemo letala in poti
-                renderAircraft();
+                updateMap(data, true);
             } catch (err) {
                 console.error("Napaka pri pridobivanju zgodovinskih podatkov:", err);
             }

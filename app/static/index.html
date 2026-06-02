@@ -371,38 +371,38 @@
                 }
             }
 
-            // Update Full List in sidebar
-            const listDiv = document.getElementById('flight-list');
-            listDiv.innerHTML = '';
+            // // Update Full List in sidebar
+            // const listDiv = document.getElementById('flight-list');
+            // listDiv.innerHTML = '';
 
-            let visibleAircraft = [];
+            // let visibleAircraft = [];
 
-            for (let hex in markers) {
-                // Poiščemo najnovejše podatke za ta hex v vseh prejetih letalih (tudi če so za sekundo izginila iz 'aircraft')
-                let p = data.aircraft.find(a => a.hex === hex) || data.all_aircraft.find(a => a.hex === hex);
+            // for (let hex in markers) {
+            //     // Poiščemo najnovejše podatke za ta hex v vseh prejetih letalih (tudi če so za sekundo izginila iz 'aircraft')
+            //     let p = data.aircraft.find(a => a.hex === hex) || data.all_aircraft.find(a => a.hex === hex);
 
-                if (p) {
-                    visibleAircraft.push(p);
-                } else {
-                    // Če podatkov sploh ni več v 24-urni zgodovini, uporabimo osnovni hex
-                    visibleAircraft.push({ hex: hex, flight: hex, alt_baro: 'N/A', gs: 'N/A' });
-                }
-            }
+            //     if (p) {
+            //         visibleAircraft.push(p);
+            //     } else {
+            //         // Če podatkov sploh ni več v 24-urni zgodovini, uporabimo osnovni hex
+            //         visibleAircraft.push({ hex: hex, flight: hex, alt_baro: 'N/A', gs: 'N/A' });
+            //     }
+            // }
 
-            visibleAircraft.sort((a, b) => {
-                let nameA = (a.flight || a.hex).toString().trim();
-                let nameB = (b.flight || b.hex).toString().trim();
-                return nameA.localeCompare(nameB);
-            });
+            // visibleAircraft.sort((a, b) => {
+            //     let nameA = (a.flight || a.hex).toString().trim();
+            //     let nameB = (b.flight || b.hex).toString().trim();
+            //     return nameA.localeCompare(nameB);
+            // });
 
-            visibleAircraft.forEach(p => {
-                let item = document.createElement('div');
-                item.className = 'flight-item';
-                item.id = `flight-item-${p.hex}`;
-                item.innerHTML = `<b>${p.flight || p.hex}</b><br>Alt: ${p.alt_baro || 'N/A'} ft<br>GS: ${p.gs || 'N/A'}`;
-                item.onclick = () => toggleFlightSelection(p.hex);
-                listDiv.appendChild(item);
-            });
+            // visibleAircraft.forEach(p => {
+            //     let item = document.createElement('div');
+            //     item.className = 'flight-item';
+            //     item.id = `flight-item-${p.hex}`;
+            //     item.innerHTML = `<b>${p.flight || p.hex}</b><br>Alt: ${p.alt_baro || 'N/A'} ft<br>GS: ${p.gs || 'N/A'}`;
+            //     item.onclick = () => toggleFlightSelection(p.hex);
+            //     listDiv.appendChild(item);
+            // });
 
 
             // Update active aircraft on map
@@ -410,10 +410,12 @@
                 let track = p.track || 0;
                 let isSelected = (p.hex === selectedFlightHex);
 
+                let displayName = (p.flight && p.flight.trim() !== "") ? p.flight : p.hex;
+
                 // Add/update marker
                 if (!markers[p.hex]) {
                     markers[p.hex] = L.marker([p.lat, p.lon], { icon: getPlaneIcon(track, isHistory, isSelected) }).addTo(map)
-                        .bindPopup(`<b>${p.flight || p.hex}</b>`, { autoPan: false });
+                        .bindPopup(`<b>${displayName}</b>`, { autoPan: false });
 
                     markers[p.hex].on('click', (e) => {
                         L.DomEvent.stopPropagation(e);
@@ -426,11 +428,43 @@
                     if (popup) {
                         popup.options.autoPan = false;
                     }
-                    markers[p.hex].setPopupContent(`<b>${p.flight || p.hex}</b>`);
+                    markers[p.hex].setPopupContent(`<b>${displayName}</b>`);
                 }
 
                 // Update paths based on selection
                 updateFlightPath(p, data.paths, isHistory);
+            });
+
+            // Update Full List in sidebar
+            const listDiv = document.getElementById('flight-list');
+            listDiv.innerHTML = '';
+
+            let visibleAircraft = [];
+            for (let hex in markers) {
+                let p = data.aircraft.find(a => a.hex === hex) || data.all_aircraft.find(a => a.hex === hex);
+                if (p) {
+                    visibleAircraft.push(p);
+                } else {
+                    visibleAircraft.push({ hex: hex, flight: hex, alt_baro: 'N/A', gs: 'N/A' });
+                }
+            }
+
+            // Sortiramo po prikažnem imenu (Flight number oz. Hex)
+            visibleAircraft.sort((a, b) => {
+                let nameA = ((a.flight && a.flight.trim() !== "") ? a.flight : a.hex).toString().trim();
+                let nameB = ((b.flight && b.flight.trim() !== "") ? b.flight : b.hex).toString().trim();
+                return nameA.localeCompare(nameB);
+            });
+
+            // Izris v stransko vrstico
+            visibleAircraft.forEach(p => {
+                let displayName = (p.flight && p.flight.trim() !== "") ? p.flight : p.hex;
+                let item = document.createElement('div');
+                item.className = 'flight-item';
+                item.id = `flight-item-${p.hex}`; // ID elementa še vedno sledljiv preko hex-a
+                item.innerHTML = `<b>${displayName}</b><br>Alt: ${p.alt_baro || 'N/A'} ft<br>GS: ${p.gs || 'N/A'}`;
+                item.onclick = () => toggleFlightSelection(p.hex); // Klik vedno preda hex
+                listDiv.appendChild(item);
             });
 
             if (selectedFlightHex) {
@@ -446,68 +480,65 @@
             }
         }
 
-        function updateFlightPath(plane, allPaths, isHistory) {
-            const flightId = plane.flight || plane.hex;
-            const hex = plane.hex;
+        function updateFlightPath(p, pathsData, isHistory) {
+            if (!pathsData) return;
 
-            // Clear existing polylines for this flight
-            if (polylines[hex]) {
-                polylines[hex].forEach(pl => map.removeLayer(pl));
-            }
-            polylines[hex] = [];
+            // POENOTENJE: Backend lahko pot shrani pod "flight" ali pod "hex". Preverimo oboje!
+            let flightSegments = pathsData[p.hex] || pathsData[p.flight];
 
-            if (selectedFlightHex === hex && allPaths[flightId]) {
-                const segments = allPaths[flightId];
-                if (!segments) return;
-                for (let i = 0; i < segments.length; i++) {
-                    // Draw solid line for the segment
-                    const segment = segments[i];
-                    if (segment && segment.length > 1) {
-                        const solidLine = L.polyline(segment, { color: isHistory ? 'blue' : 'red', weight: 2, opacity: 0.7 }).addTo(map);
-                        polylines[hex].push(solidLine);
-                    }
-
-                    // Draw dotted line to the next segment if it exists
-                    if (i < segments.length - 1) {
-                        const nextSegment = segments[i + 1];
-                        if (segment && segment.length > 0 && nextSegment && nextSegment.length > 0) {
-                            const lastPoint = segment[segment.length - 1];
-                            const firstPointOfNext = nextSegment[0];
-                            const dottedLine = L.polyline([lastPoint, firstPointOfNext], { color: isHistory ? 'cyan' : 'orange', weight: 2, opacity: 0.7, dashArray: '5, 10' }).addTo(map);
-                            polylines[hex].push(dottedLine);
-                        }
-                    }
+            // Če letalo ni izbrano, počistimo njegove črte s seznama izbranih (če obstajajo)
+            if (p.hex !== selectedFlightHex) {
+                if (polylines[p.hex]) {
+                    polylines[p.hex].forEach(pl => map.removeLayer(pl));
+                    polylines[p.hex] = [];
                 }
+                return;
+            }
+
+            // Če je izbrano, izrišemo segmente
+            if (flightSegments && flightSegments.length > 0) {
+                if (!polylines[p.hex]) polylines[p.hex] = [];
+
+                // Počistimo stare črte za to letalo pred ponovnim izrisom
+                polylines[p.hex].forEach(pl => map.removeLayer(pl));
+                polylines[p.hex] = [];
+
+                flightSegments.forEach(segment => {
+                    if (segment.length < 2) return;
+                    let color = isHistory ? '#3498db' : '#d35400'; // Modra za zgodovino, oranžna za žive podatke
+                    let pl = L.polyline(segment, { color: color, weight: 3, opacity: 0.8 }).addTo(map);
+                    polylines[p.hex].push(pl);
+                });
             }
         }
 
         function updateTelemetryCard(data) {
             if (!selectedFlightHex || !data) return;
 
-            // Poiščemo izbrano letalo med podatki
+            // Poiščemo podatke letala preko unikatnega hex-a
             let p = data.aircraft.find(a => a.hex === selectedFlightHex) || data.all_aircraft.find(a => a.hex === selectedFlightHex);
             if (!p) return;
 
             const card = document.getElementById('telemetry-card');
 
-            // Izpolnimo osnovne podatke
-            document.getElementById('tel-flight').innerText = `Let: ${p.flight || p.hex}`;
-            document.getElementById('tel-hex').innerText = p.hex;
+            // POENOTENJE tekstov
+            let displayName = (p.flight && p.flight.trim() !== "") ? p.flight : p.hex;
+            document.getElementById('tel-flight').innerText = `Let: ${displayName}`;
+            document.getElementById('tel-hex').innerText = p.hex; // Tukaj se vedno izpiše surovi HEX
             document.getElementById('tel-alt').innerText = p.alt_baro ? `${p.alt_baro} ft` : 'N/A';
             document.getElementById('tel-gs').innerText = p.gs ? `${p.gs} kt` : 'N/A';
             document.getElementById('tel-track').innerText = p.track ? `${p.track}°` : 'N/A';
             document.getElementById('tel-pos').innerText = `${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}`;
 
-            // Izračunamo preleteno dolžino sledenja
-            const flightId = p.flight || p.hex;
-            if (data.paths && data.paths[flightId]) {
-                let totalKm = getTrackLength(data.paths[flightId]);
+            // Izračun dolžine poti (preverimo oba ključa v paths)
+            let flightSegments = data.paths ? (data.paths[p.hex] || data.paths[p.flight]) : null;
+            if (flightSegments) {
+                let totalKm = getTrackLength(flightSegments);
                 document.getElementById('tel-distance').innerText = `${totalKm.toFixed(1)} km`;
             } else {
                 document.getElementById('tel-distance').innerText = '0.0 km';
             }
 
-            // Prikažemo kartico
             card.style.display = 'block';
         }
 

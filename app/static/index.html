@@ -160,6 +160,65 @@
         .container.sidebar-hidden .sidebar-toggle-button {
             left: 0;
         }
+
+        /* Okno s podatki v desnem spodnjem kotu */
+        .telemetry-card {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 280px;
+            background: rgba(44, 62, 80, 0.95);
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            z-index: 1001;
+            display: none;
+            /* Skrito po defaultu, dokler ne kliknemo letala */
+            border-left: 4px solid #d35400;
+            /* Oranžna črta, ki se ujema z izbranim letalom */
+            font-size: 0.9rem;
+        }
+
+        .telemetry-card h3 {
+            margin: 0 0 10px 0;
+            font-size: 1.1rem;
+            color: #f1c40f;
+            border-bottom: 1px solid #34495e;
+            padding-bottom: 5px;
+        }
+
+        .telemetry-card .close-btn {
+            position: absolute;
+            top: 8px;
+            right: 10px;
+            background: none;
+            border: none;
+            color: #bdc3c7;
+            cursor: pointer;
+            font-size: 1rem;
+            width: auto;
+            padding: 0;
+            margin: 0;
+        }
+
+        .telemetry-card .close-btn:hover {
+            color: white;
+        }
+
+        .telemetry-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+        }
+
+        .telemetry-label {
+            color: #bdc3c7;
+        }
+
+        .telemetry-value {
+            font-weight: bold;
+        }
     </style>
 </head>
 
@@ -199,6 +258,24 @@
         <div class="map-section">
             <div id="map"></div>
         </div>
+        <div id="telemetry-card" class="telemetry-card">
+            <button class="close-btn" onclick="closeTelemetry()">✕</button>
+            <h3 id="tel-flight">Let: N/A</h3>
+            <div class="telemetry-row"><span class="telemetry-label">Hex koda:</span><span class="telemetry-value"
+                    id="tel-hex">-</span></div>
+            <div class="telemetry-row"><span class="telemetry-label">Višina (Alt):</span><span class="telemetry-value"
+                    id="tel-alt">-</span></div>
+            <div class="telemetry-row"><span class="telemetry-label">Hitrost (GS):</span><span class="telemetry-value"
+                    id="tel-gs">-</span></div>
+            <div class="telemetry-row"><span class="telemetry-label">Smer (Track):</span><span class="telemetry-value"
+                    id="tel-track">-</span></div>
+            <div class="telemetry-row"><span class="telemetry-label">Pozicija:</span><span class="telemetry-value"
+                    id="tel-pos">-</span></div>
+            <div class="telemetry-row" style="margin-top: 8px; border-top: 1px dashed #34495e; padding-top: 5px;">
+                <span class="telemetry-label">Dolžina sledenja:</span><span class="telemetry-value" id="tel-distance"
+                    style="color: #1abc9c;">0.0 km</span>
+            </div>
+        </div>
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -211,6 +288,7 @@
                 selectedFlightHex = null;
                 redrawAllPaths();
                 updateSelectionHighlight();
+                document.getElementById('telemetry-card').style.display = 'none'; // Skrij kartico
             }
         });
 
@@ -225,6 +303,37 @@
         let mode = 'live';
         let liveInterval = null;
         let historyInterval = null;
+
+        function calculateDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371; // Polmer Zemlje v km
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c;
+        }
+
+        function getTrackLength(segments) {
+            if (!segments || segments.length === 0) return 0;
+            let totalDist = 0;
+            segments.forEach(segment => {
+                for (let i = 1; i < segment.length; i++) {
+                    totalDist += calculateDistance(segment[i - 1][0], segment[i - 1][1], segment[i][0], segment[i][1]);
+                }
+            });
+            return totalDist;
+        }
+
+        function closeTelemetry() {
+            document.getElementById('telemetry-card').style.display = 'none';
+            if (selectedFlightHex !== null) {
+                selectedFlightHex = null;
+                redrawAllPaths();
+                updateSelectionHighlight();
+            }
+        }
 
         const planeSvg = `<svg viewBox="0 0 24 24" class="plane-svg {CLASS}"><path d="M21,16V14L13,9V3.5A1.5,1.5 0 0,0 11.5,2 A1.5,1.5 0 0,0 10,3.5V9L2,14V16L10,13.5V19L8,20.5V22L11.5,21L15,22V20.5L13,19V13.5L21,16Z"/></svg>`;
 
@@ -304,9 +413,8 @@
                 // Add/update marker
                 if (!markers[p.hex]) {
                     markers[p.hex] = L.marker([p.lat, p.lon], { icon: getPlaneIcon(track, isHistory, isSelected) }).addTo(map)
-                        .bindPopup(`<b>Fl: ${p.flight || p.hex}</b><br>Alt: ${p.alt_baro}<br>GS: ${p.gs}`, { autoPan: false });
+                        .bindPopup(`<b>${p.flight || p.hex}</b>`, { autoPan: false });
 
-                    // POPRAVEK: Uporabimo Leafletov dogodek 'e', da ustavimo širjenje klika na zemljevid
                     markers[p.hex].on('click', (e) => {
                         L.DomEvent.stopPropagation(e);
                         toggleFlightSelection(p.hex);
@@ -318,12 +426,16 @@
                     if (popup) {
                         popup.options.autoPan = false;
                     }
-                    markers[p.hex].setPopupContent(`<b>Fl: ${p.flight || p.hex}</b><br>Alt: ${p.alt_baro}<br>GS: ${p.gs}`);
+                    markers[p.hex].setPopupContent(`<b>${p.flight || p.hex}</b>`);
                 }
 
                 // Update paths based on selection
                 updateFlightPath(p, data.paths, isHistory);
             });
+
+            if (selectedFlightHex) {
+                updateTelemetryCard(data);
+            }
 
             updateSelectionHighlight();
 
@@ -369,9 +481,40 @@
             }
         }
 
+        function updateTelemetryCard(data) {
+            if (!selectedFlightHex || !data) return;
+
+            // Poiščemo izbrano letalo med podatki
+            let p = data.aircraft.find(a => a.hex === selectedFlightHex) || data.all_aircraft.find(a => a.hex === selectedFlightHex);
+            if (!p) return;
+
+            const card = document.getElementById('telemetry-card');
+
+            // Izpolnimo osnovne podatke
+            document.getElementById('tel-flight').innerText = `Let: ${p.flight || p.hex}`;
+            document.getElementById('tel-hex').innerText = p.hex;
+            document.getElementById('tel-alt').innerText = p.alt_baro ? `${p.alt_baro} ft` : 'N/A';
+            document.getElementById('tel-gs').innerText = p.gs ? `${p.gs} kt` : 'N/A';
+            document.getElementById('tel-track').innerText = p.track ? `${p.track}°` : 'N/A';
+            document.getElementById('tel-pos').innerText = `${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}`;
+
+            // Izračunamo preleteno dolžino sledenja
+            const flightId = p.flight || p.hex;
+            if (data.paths && data.paths[flightId]) {
+                let totalKm = getTrackLength(data.paths[flightId]);
+                document.getElementById('tel-distance').innerText = `${totalKm.toFixed(1)} km`;
+            } else {
+                document.getElementById('tel-distance').innerText = '0.0 km';
+            }
+
+            // Prikažemo kartico
+            card.style.display = 'block';
+        }
+
         function toggleFlightSelection(hex) {
             if (selectedFlightHex === hex) {
                 selectedFlightHex = null; // Deselect, če kliknemo isto letalo
+                document.getElementById('telemetry-card').style.display = 'none'; // Skrij kartico
             } else {
                 selectedFlightHex = hex;
             }
@@ -379,6 +522,10 @@
             // Takoj osvežimo poti in sidebar, da ni zamika do naslednjega fetch-a
             redrawAllPaths();
             updateSelectionHighlight();
+
+            if (selectedFlightHex && lastData) {
+                updateTelemetryCard(lastData);
+            }
         }
 
         function updateSelectionHighlight() {

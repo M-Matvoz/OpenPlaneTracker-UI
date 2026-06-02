@@ -241,7 +241,7 @@
 
             <div id="history-panel" class="panel">
                 <h4>Zgodovina</h4>
-                <input type="datetime-local" id="hist-date">
+                <input type="date" id="hist-date">
                 <input type="time" id="hist-time" step="2">
                 <button onclick="fetchHistory()">Prikaži</button>
                 <div style="margin-top: 10px">
@@ -633,6 +633,12 @@
                     let d = await r.json();
                     if (d.max) {
                         let dtx = new Date(d.max);
+
+                        if (isNaN(dtx.getTime())) {
+                            dtx = new Date();
+                        }
+
+                        // UPORABA LOKALNIH METOD: Pridobimo točen lokalni čas računalnika (vključno z UTC+2)
                         let year = dtx.getFullYear();
                         let month = String(dtx.getMonth() + 1).padStart(2, '0');
                         let day = String(dtx.getDate()).padStart(2, '0');
@@ -640,7 +646,7 @@
                         let minutes = String(dtx.getMinutes()).padStart(2, '0');
                         let seconds = String(dtx.getSeconds()).padStart(2, '0');
 
-                        // Pravilen vnos v ločena polja brez sesutja brskalnika
+                        // Sedaj bo v polju točno tisti čas, ko je bilo letalo dejansko vidno na našem nebu
                         document.getElementById('hist-date').value = `${year}-${month}-${day}`;
                         document.getElementById('hist-time').value = `${hours}:${minutes}:${seconds}`;
                     }
@@ -656,8 +662,19 @@
             let timeInput = document.getElementById('hist-time');
             if (!dateInput.value || !timeInput.value) return;
 
-            // Ustvarimo objekt datuma iz trenutno nastavljenih vrednosti
-            let currentDt = new Date(`${dateInput.value}T${timeInput.value}`);
+            // Za varno branje zamenjamo morebitne vezaje, da ustreza standardnemu lokalnemu času
+            let datePart = dateInput.value; // YYYY-MM-DD
+            let timePart = timeInput.value; // HH:mm:ss
+
+            // Ustvarimo objekt datuma. Zamenjava "T" s presledkom izboljša stabilnost parsanja v JS
+            let currentDt = new Date(`${datePart} ${timePart}`);
+
+            // Če je prišlo do napake pri branju, prekinemo, da ne vpisujemo NaN
+            if (isNaN(currentDt.getTime())) {
+                console.error("Neveljaven format datuma v vnosnih poljih.");
+                return;
+            }
+
             // Prištejemo natanko 2 sekundi za naslednji korak predvajanja
             currentDt.setSeconds(currentDt.getSeconds() + 2);
 

@@ -317,7 +317,9 @@ async def get_history_data(target_time: str):
                 paths_by_hex[h].append({"lat": lat, "lon": lon, "time": t})
 
                 # Ohranimo samo najnovejši položaj za vsako letalo v izbranem trenutku (marker)
-                if h not in seen_hexes or t > seen_hexes[h]["time"]:
+                if h not in seen_hexes or t > seen_hexes[h]["_raw_time"]:
+                    # t.astimezone(None) pretvori UTC čas iz Influxa v lokalni čas sistema (UTC+2)
+                    local_t = t.astimezone(None)
                     seen_hexes[h] = {
                         "hex": h,
                         "flight": fl,
@@ -326,7 +328,8 @@ async def get_history_data(target_time: str):
                         "alt_baro": None if alt is None or math.isnan(alt) else int(alt),
                         "gs": None if gs is None or math.isnan(gs) else int(gs),
                         "track": None if tr is None or math.isnan(tr) else tr,
-                        "time": t,  # Potrebujemo za primerjavo, kasneje pobrišemo
+                        "time_str": local_t.strftime("%H:%M:%S"),  # Lokalni čas za frontend prikaz, če boš rabil
+                        "_raw_time": t,
                     }
 
         # Formatiramo poti v segmente s prekinitevami, indeksirano s HEX kodo
@@ -350,7 +353,7 @@ async def get_history_data(target_time: str):
         # Očistimo 'time' ključ iz aircraft objektov, da ne povzroča težav s serializacijo
         aircraft_list = []
         for ac in seen_hexes.values():
-            ac.pop("time", None)
+            ac.pop("_raw_time", None)
             aircraft_list.append(ac)
 
         return {"aircraft": aircraft_list, "all_aircraft": aircraft_list, "paths": formatted_paths}

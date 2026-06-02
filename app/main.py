@@ -202,9 +202,8 @@ async def get_collated_data():
     # 3. Zgodovina poti samo za aktivna letala (grupirano in indeksirano preko HEX-a)
     active_history = live_history[live_history["hex"].isin(active_hexes)]
 
-    # Process paths to include segments for gaps
     paths = {}
-    for flight, group in active_history.sort_values("timestamp").groupby("flight"):
+    for hex_code, group in active_history.sort_values("timestamp").groupby("hex"):
         points = group[["lat", "lon", "timestamp"]].to_numpy()
         segments = []
         if len(points) > 0:
@@ -213,6 +212,8 @@ async def get_collated_data():
                 ts1 = pd.to_datetime(points[i - 1][2]).tz_localize(None)
                 ts2 = pd.to_datetime(points[i][2]).tz_localize(None)
                 time_diff = (ts2 - ts1).total_seconds()
+
+                # Če je prekinitev daljša od 10 sekund, ustvari nov segment
                 if time_diff > 10:
                     if len(current_segment) > 1:
                         segments.append(current_segment)
@@ -222,7 +223,9 @@ async def get_collated_data():
                     current_segment.append([points[i][0], points[i][1]])
             if len(current_segment) > 1:
                 segments.append(current_segment)
-        paths[flight] = segments
+
+        # Ključ v objektu paths bo sedaj pravilno HEX koda
+        paths[hex_code] = segments
 
     # 4. REŠITEV ZA MASK & SIZE ERROR:
     # Namesto zapletenega maskiranja nad sortiranimi podatki uporabimo enostaven .replace()
@@ -237,10 +240,6 @@ async def get_collated_data():
     # Poenotimo izhod: če je flight prazen ali enak hex-u, naj bo None za frontend logiko
     aircraft_list = active_latest_df.to_dict(orient="records")
     all_aircraft_list = all_latest_df.to_dict(orient="records")
-
-    # Pretvorimo v native Python tipe (Pandas NaN avtomatsko postane float('nan'))
-    aircraft = active_latest_df.to_dict(orient="records")
-    all_aircraft = all_latest_df.to_dict(orient="records")
 
     for ac in aircraft_list + all_aircraft_list:
         if ac.get("flight"):

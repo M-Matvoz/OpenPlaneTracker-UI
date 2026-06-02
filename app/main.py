@@ -15,6 +15,7 @@ import uuid
 from contextlib import asynccontextmanager
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
+from influxdb_client.client.flux_client import FluxRows
 
 INFLUX_URL = "http://influxdb:8086"
 try:
@@ -191,26 +192,19 @@ async def get_collated_data():
         return {"aircraft": [], "all_aircraft": [], "paths": {}}
 
     # 1. Pridobi nazadnje videno lokacijo vseh letal v zadnjih 24 urah
-    all_latest_df = (
-        live_history.sort_values("timestamp").groupby("flight").tail(1).copy()
-    )
+    all_latest_df = live_history.sort_values("timestamp").groupby("hex").tail(1).copy()
 
     # 2. Kot aktivna obravnavamo samo tista letala, ki smo jih opazili v zadnjih 5 minutah
     active_cutoff = pd.Timestamp.now() - pd.Timedelta(minutes=5)
-    active_latest_df = all_latest_df[
-        all_latest_df["timestamp"] >= active_cutoff
-    ].copy()
+    active_latest_df = all_latest_df[all_latest_df["timestamp"] >= active_cutoff].copy()
+    active_hexes = active_latest_df["hex"].unique()
 
-    active_flights = active_latest_df["flight"].unique()
-
-    # 3. Zgodovina poti samo za aktivna letala
-    active_history = live_history[live_history["flight"].isin(active_flights)]
+    # 3. Zgodovina poti samo za aktivna letala (grupirano in indeksirano preko HEX-a)
+    active_history = live_history[live_history["hex"].isin(active_hexes)]
 
     # Process paths to include segments for gaps
     paths = {}
-    for flight, group in (
-        active_history.sort_values("timestamp").groupby("flight")
-    ):
+    for flight, group in active_history.sort_values("timestamp").groupby("flight"):
         points = group[["lat", "lon", "timestamp"]].to_numpy()
         segments = []
         if len(points) > 0:
@@ -237,30 +231,28 @@ async def get_collated_data():
         if "timestamp" in df.columns:
             df["timestamp"] = df["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%S")
 
-    # Sortiramo all_latest_df šele sedaj, ko so tipi v stolpcih enotni
-    all_latest_df = all_latest_df.sort_values("timestamp", ascending=False)
+    active_latest_df = active_latest_df.replace({np.nan: None})
+    all_latest_df = all_latest_df.replace({np.nan: None})
+
+    # Poenotimo izhod: če je flight prazen ali enak hex-u, naj bo None za frontend logiko
+    aircraft_list = active_latest_df.to_dict(orient="records")
+    all_aircraft_list = all_latest_df.to_dict(orient="records")
 
     # Pretvorimo v native Python tipe (Pandas NaN avtomatsko postane float('nan'))
     aircraft = active_latest_df.to_dict(orient="records")
     all_aircraft = all_latest_df.to_dict(orient="records")
 
-    # Na nivoju čistega Pythona zamenjamo vse NaN z None (kar bo v JSON postalo null)
-    # To popolnoma zaobide kaprice Pandas encoderja
-    def clean_nan_values(records_list):
-        for record in records_list:
-            for key, value in record.items():
-                if pd.isna(value):  # Ulovi NaN, None in NaT
-                    record[key] = None
-        return records_list
+    for ac in aircraft_list + all_aircraft_list:
+        if ac.get("flight"):
+            ac["flight"] = str(ac["flight"]).strip()
+            if ac["flight"] == "" or ac["flight"] == ac["hex"]:
+                ac["flight"] = None
 
-    aircraft = clean_nan_values(aircraft)
-    all_aircraft = clean_nan_values(all_aircraft)
-
-    print(
-        f"Active aircraft: {len(aircraft)}, All aircraft: {len(all_aircraft)}, Paths: {len(paths)}"
-    )
-
-    return {"aircraft": aircraft, "all_aircraft": all_aircraft, "paths": paths}
+    return {
+        "aircraft": aircraft_list,
+        "all_aircraft": all_aircraft_list,
+        "paths": paths,
+    }
 
 
 @app.get("/live/history/dates")
@@ -280,107 +272,93 @@ async def get_history_dates():
 
 @app.get("/live/history/data")
 async def get_history_data(target_time: str):
-    if not db_ready:
-        return {"aircraft": [], "all_aircraft": [], "paths": {}}  # Popravljeno na ključe, ki jih frontend pričakuje
-
     try:
+        # Rešitev za napačne ISO formate (odstranimo podvojene T-je, če pridejo s frontenda)
+        if target_time.count("T") > 1:
+            parts = target_time.split("T")
+            target_time = f"{parts[0]}T{parts[1]}"
+
         target_dt = datetime.fromisoformat(target_time)
+        start_dt = target_dt - timedelta(minutes=30)
 
-        # Find flights that were active at target_dt
-        active_flights_query = text("""
-            SELECT flightpath_uuid, flight_no FROM flights
-            WHERE started_tracking <= :target AND ended_tracking >= :target
-        """)
-        with engine.connect() as connection:
-            active_flights_df = pd.read_sql(active_flights_query, connection, params={"target": target_dt})
-
-        if active_flights_df.empty:
-            return {"aircraft": [], "all_aircraft": [], "paths": {}}
-
-        active_uuids = tuple(active_flights_df["flightpath_uuid"].astype(str).tolist())
-
-        # Get telemetry for these flights up to target_dt
-        flux_query = f"""
-            from(bucket: "{INFLUX_BUCKET}")
-              |> range(start: 0, stop: {target_dt.isoformat()}Z)
-              |> filter(fn: (r) => contains(value: r.flight_uuid, set: {str(list(active_uuids))}))
-              |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
-              |> group(columns: ["flight_uuid"])
+        query = """
+            SELECT time, flight_uuid, flight_no, hex, lat, lon, alt_baro, gs, track
+            FROM flight_telemetry
+            WHERE time >= :start AND time <= :target
         """
 
-        query_api = influx_client.query_api()
-        result = query_api.query(flux_query, org=INFLUX_ORG)
+        # Izvedemo poizvedbo v InfluxDB preko Pandas oz. influx klienta
+        # (Zaradi enostavnosti uporabimo obstoječo logiko v vaši skripti, ampak jo očistimo)
 
-        planes = []
-        paths = {}
+        flux_query = f"""
+            from(bucket: "{INFLUX_BUCKET}")
+            |> range(start: {start_dt.isoformat()}Z, stop: {target_dt.isoformat()}Z)
+            |> filter(fn: (r) => r["_measurement"] == "flight_telemetry")
+            |> pivot(rowKey:["_time", "flight_uuid", "hex", "flight_no"], columnKey: ["_field"], valueColumn: "_value")
+        """
 
-        for table in result:
-            if not table.records:
-                continue
+        tables = influx_client.query_api().query(flux_query, org=INFLUX_ORG)
 
-            flight_uuid = table.records[0].values.get("flight_uuid")
-            flight_no_series = active_flights_df[active_flights_df["flightpath_uuid"].astype(str) == flight_uuid][
-                "flight_no"
-            ]
-            if flight_no_series.empty:
-                continue
-            flight_no = flight_no_series.iloc[0]
+        aircraft_list = []
+        paths_by_hex = {}
+        seen_hexes = {}
 
-            # Sort records by time
-            sorted_records = sorted(table.records, key=lambda r: r.get_time())
-
-            segments = []
-            current_segment = []
-
-            for i, record in enumerate(sorted_records):
+        for table in tables:
+            for record in table.records:
+                h = record.values.get("hex")
+                fl = record.values.get("flight_no")
                 lat = record.get_value_by_key("lat")
                 lon = record.get_value_by_key("lon")
+                alt = record.get_value_by_key("alt_baro")
+                gs = record.get_value_by_key("gs")
+                tr = record.get_value_by_key("track")
+                t = record.get_time()
 
-                # VARNOSTNI POPRAVEK: Preskoči točko, če je NaN ali None
-                if lat is None or lon is None or math.isnan(lat) or math.isnan(lon):
+                if not h or lat is None or lon is None or math.isnan(lat) or math.isnan(lon):
                     continue
 
-                if i > 0:
-                    time_diff = (record.get_time() - sorted_records[i - 1].get_time()).total_seconds()
-                    if time_diff > 10 and current_segment:
-                        segments.append(current_segment)
-                        current_segment = []
+                h = str(h).strip()
+                fl = str(fl).strip() if fl else None
+                if fl == "" or fl == h:
+                    fl = None
 
-                current_segment.append([lat, lon])
+                # Shranjevanje poti pod HEX kodo
+                if h not in paths_by_hex:
+                    paths_by_hex[h] = []
+                paths_by_hex[h].append({"lat": lat, "lon": lon, "time": t})
 
-            if current_segment:
-                segments.append(current_segment)
-
-            paths[flight_no] = segments
-
-            # Get the latest record for the plane's current position
-            latest_record = max(table.records, key=lambda r: r.get_time())
-            l_lat = latest_record.get_value_by_key("lat")
-            l_lon = latest_record.get_value_by_key("lon")
-
-            # Če ima zadnja znana točka NaN lokacijo, je raje ne rišemo kot marker
-            if l_lat is not None and l_lon is not None and not math.isnan(l_lat) and not math.isnan(l_lon):
-                # Pripravimo vrednosti in nadomestimo NaN z None (ki se prevede v JSON null)
-                alt = latest_record.get_value_by_key("alt_baro")
-                gs = latest_record.get_value_by_key("gs")
-                track = latest_record.get_value_by_key("track")
-
-                planes.append(
-                    {
-                        "hex": latest_record.values.get("hex"),
-                        "flight": flight_no,
-                        "lat": l_lat,
-                        "lon": l_lon,
-                        "alt_baro": (None if alt is None or math.isnan(alt) else int(alt)),
+                # Ohranimo samo najnovejši položaj za vsako letalo (marker)
+                if h not in seen_hexes or t > seen_hexes[h]["time"]:
+                    seen_hexes[h] = {
+                        "time": t,
+                        "hex": h,
+                        "flight": fl,
+                        "lat": lat,
+                        "lon": lon,
+                        "alt_baro": None if alt is None or math.isnan(alt) else int(alt),
                         "gs": None if gs is None or math.isnan(gs) else int(gs),
-                        "track": (None if track is None or math.isnan(track) else track),
+                        "track": None if tr is None or math.isnan(tr) else tr,
                     }
-                )
 
-        # FRONTEND USKLADITEV: Frontend v index.html za zgodovino pričakuje ključa 'aircraft' in 'all_aircraft'
-        # namesto 'planes'. Zato vrnemo strukturo, ki jo updateMap() dejansko zna prebrati.
-        return {"aircraft": planes, "all_aircraft": planes, "paths": paths}
+        # Formatiramo poti v segmente, kot jih pričakuje frontend
+        formatted_paths = {}
+        for h, pts in paths_by_hex.items():
+            pts.sort(key=lambda x: x["time"])
+            segments = []
+            if pts:
+                curr_seg = [[pts[0]["lat"], pts[0]["lon"]]]
+                for i in range(1, len(pts)):
+                    diff = (pts[i]["time"] - pts[i - 1]["time"]).total_seconds()
+                    if diff > 10:
+                        segments.append(curr_seg)
+                        curr_seg = []
+                    curr_seg.append([pts[i]["lat"], pts[i]["lon"]])
+                segments.append(curr_seg)
+            formatted_paths[h] = segments
 
+        aircraft_list = list(seen_hexes.values())
+
+        return {"aircraft": aircraft_list, "all_aircraft": aircraft_list, "paths": formatted_paths}
     except Exception as e:
         print(f"Napaka v zgodovini: {e}")
         return {"aircraft": [], "all_aircraft": [], "paths": {}}

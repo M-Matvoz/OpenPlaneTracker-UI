@@ -483,10 +483,9 @@
         function updateFlightPath(p, pathsData, isHistory) {
             if (!pathsData) return;
 
-            // POENOTENJE: Backend lahko pot shrani pod "flight" ali pod "hex". Preverimo oboje!
-            let flightSegments = pathsData[p.hex] || pathsData[p.flight];
+            // POTI: Sedaj so na backendu poenotene in vedno shranjene pod hex kodo!
+            let flightSegments = pathsData[p.hex];
 
-            // Če letalo ni izbrano, počistimo njegove črte s seznama izbranih (če obstajajo)
             if (p.hex !== selectedFlightHex) {
                 if (polylines[p.hex]) {
                     polylines[p.hex].forEach(pl => map.removeLayer(pl));
@@ -495,17 +494,15 @@
                 return;
             }
 
-            // Če je izbrano, izrišemo segmente
             if (flightSegments && flightSegments.length > 0) {
                 if (!polylines[p.hex]) polylines[p.hex] = [];
 
-                // Počistimo stare črte za to letalo pred ponovnim izrisom
                 polylines[p.hex].forEach(pl => map.removeLayer(pl));
                 polylines[p.hex] = [];
 
                 flightSegments.forEach(segment => {
                     if (segment.length < 2) return;
-                    let color = isHistory ? '#3498db' : '#d35400'; // Modra za zgodovino, oranžna za žive podatke
+                    let color = isHistory ? '#3498db' : '#d35400';
                     let pl = L.polyline(segment, { color: color, weight: 3, opacity: 0.8 }).addTo(map);
                     polylines[p.hex].push(pl);
                 });
@@ -515,23 +512,22 @@
         function updateTelemetryCard(data) {
             if (!selectedFlightHex || !data) return;
 
-            // Poiščemo podatke letala preko unikatnega hex-a
             let p = data.aircraft.find(a => a.hex === selectedFlightHex) || data.all_aircraft.find(a => a.hex === selectedFlightHex);
             if (!p) return;
 
             const card = document.getElementById('telemetry-card');
 
-            // POENOTENJE tekstov
+            // POENOTENJE: Če obstaja flight številka, izpiši npr. "Let: FR123", drugače "Let: 4b12a2"
             let displayName = (p.flight && p.flight.trim() !== "") ? p.flight : p.hex;
+
             document.getElementById('tel-flight').innerText = `Let: ${displayName}`;
-            document.getElementById('tel-hex').innerText = p.hex; // Tukaj se vedno izpiše surovi HEX
+            document.getElementById('tel-hex').innerText = p.hex;
             document.getElementById('tel-alt').innerText = p.alt_baro ? `${p.alt_baro} ft` : 'N/A';
             document.getElementById('tel-gs').innerText = p.gs ? `${p.gs} kt` : 'N/A';
             document.getElementById('tel-track').innerText = p.track ? `${p.track}°` : 'N/A';
             document.getElementById('tel-pos').innerText = `${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}`;
 
-            // Izračun dolžine poti (preverimo oba ključa v paths)
-            let flightSegments = data.paths ? (data.paths[p.hex] || data.paths[p.flight]) : null;
+            let flightSegments = data.paths ? data.paths[p.hex] : null;
             if (flightSegments) {
                 let totalKm = getTrackLength(flightSegments);
                 document.getElementById('tel-distance').innerText = `${totalKm.toFixed(1)} km`;
@@ -629,29 +625,52 @@
                 document.getElementById('history-panel').style.display = 'block';
                 clearInterval(liveInterval);
                 liveInterval = null;
-                lastData = null; // Clear last data when switching modes
-                selectedFlightHex = null; // Clear selection
+                lastData = null;
+                selectedFlightHex = null;
 
-                // Initialize dates if empty
-                let r = await fetch('/live/history/dates');
-                let d = await r.json();
-                if (d.max) {
-                    let dtx = new Date(d.max);
-                    document.getElementById('hist-date').value = dtx.toISOString().split('T')[0];
-                    document.getElementById('hist-time').value = dtx.toISOString().split('T')[1].split('.')[0];
+                try {
+                    let r = await fetch('/live/history/dates');
+                    let d = await r.json();
+                    if (d.max) {
+                        let dtx = new Date(d.max);
+                        let year = dtx.getFullYear();
+                        let month = String(dtx.getMonth() + 1).padStart(2, '0');
+                        let day = String(dtx.getDate()).padStart(2, '0');
+                        let hours = String(dtx.getHours()).padStart(2, '0');
+                        let minutes = String(dtx.getMinutes()).padStart(2, '0');
+                        let seconds = String(dtx.getSeconds()).padStart(2, '0');
+
+                        // Pravilen vnos v ločena polja brez sesutja brskalnika
+                        document.getElementById('hist-date').value = `${year}-${month}-${day}`;
+                        document.getElementById('hist-time').value = `${hours}:${minutes}:${seconds}`;
+                    }
+                } catch (err) {
+                    console.error("Napaka pri datumi zgodovine:", err);
                 }
                 fetchHistory();
             }
         }
 
         function stepHistory() {
+            let dateInput = document.getElementById('hist-date');
             let timeInput = document.getElementById('hist-time');
-            if (!timeInput.value) return;
-            let [h, m, s] = timeInput.value.split(':').map(Number);
-            let d = new Date();
-            d.setHours(h || 0, m || 0, s || 0);
-            d.setSeconds(d.getSeconds() + 2);
-            timeInput.value = d.toTimeString().split(' ')[0];
+            if (!dateInput.value || !timeInput.value) return;
+
+            // Ustvarimo objekt datuma iz trenutno nastavljenih vrednosti
+            let currentDt = new Date(`${dateInput.value}T${timeInput.value}`);
+            // Prištejemo natanko 2 sekundi za naslednji korak predvajanja
+            currentDt.setSeconds(currentDt.getSeconds() + 2);
+
+            let year = currentDt.getFullYear();
+            let month = String(currentDt.getMonth() + 1).padStart(2, '0');
+            let day = String(currentDt.getDate()).padStart(2, '0');
+            let hours = String(currentDt.getHours()).padStart(2, '0');
+            let minutes = String(currentDt.getMinutes()).padStart(2, '0');
+            let seconds = String(currentDt.getSeconds()).padStart(2, '0');
+
+            dateInput.value = `${year}-${month}-${day}`;
+            timeInput.value = `${hours}:${minutes}:${seconds}`;
+
             fetchHistory();
         }
 

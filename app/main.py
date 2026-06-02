@@ -272,23 +272,24 @@ async def get_history_dates():
 @app.get("/live/history/data")
 async def get_history_data(target_time: str):
     try:
-        # Čiščenje niza, če bi se slučajno podvojil 'T'
+        # Rešitev za napačne ISO formate, če se podvoji 'T'
         if target_time.count("T") > 1:
             parts = target_time.split("T")
             target_time = f"{parts[0]}T{parts[1]}"
 
-        # Parsiramo niz, ki sedaj vsebuje časovni pas (npr. +02:00)
+        # 1. Parsiramo prejeti lokalni čas z offsetom (+02:00)
         target_dt = datetime.fromisoformat(target_time)
 
-        # InfluxDB zahteva UTC čas v queryju, zato pretvorimo naš lokalni čas v UTC
-        target_utc = target_dt.astimezone(None).utcnow()  # ali krajše: target_dt.timestamp() pretvorjen v ISO
-        # Najbolj varna pot za pretvorbo kateregakoli datuma z offsetom v UTC niz za Influx:
-        target_utc_str = target_dt.astimezone(from_utc=False).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # 2. Pretvorba v čisti UTC za InfluxDB poizvedbo
+        from datetime import timezone
 
-        start_dt = target_dt - timedelta(minutes=30)
-        start_utc_str = start_dt.astimezone(from_utc=False).strftime("%Y-%m-%dT%H:%M:%SZ")
+        target_utc = target_dt.astimezone(timezone.utc)
+        start_utc = target_utc - timedelta(minutes=30)
 
-        # Ustvarimo poizvedbo z eksplicitnimi UTC nizi, ki jih Influx razume
+        # 3. Formatiramo v standardni UTC niz z 'Z' na koncu, kar Influx pričakuje
+        target_utc_str = target_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        start_utc_str = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
         flux_query = f"""
             from(bucket: "{INFLUX_BUCKET}")
             |> range(start: {start_utc_str}, stop: {target_utc_str})

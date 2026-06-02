@@ -359,11 +359,25 @@ async def get_history_data(target_time: str):
 
         # Očistimo začasni '_raw_time' pred pošiljanjem JSON-a
         aircraft_list = []
-        for ac in seen_hexes.values():
-            ac.pop("_raw_time", None)
-            aircraft_list.append(ac)
 
-        return {"aircraft": aircraft_list, "all_aircraft": aircraft_list, "paths": formatted_paths}
+        for h, ac in seen_hexes.items():
+            # ac["_raw_time"] je čas zadnjega prejetega signala za to letalo
+            # Preverimo, če je letalo oddalo signal v zadnjih 3 minutah (180 sekundah) pred target_utc
+            time_since_last_signal = (target_utc - ac["_raw_time"]).total_seconds()
+
+            if time_since_last_signal <= 180:  # 3 minute cutoff (lahko spremeniš na 120 ali 300)
+                # Očistimo začasni '_raw_time' pred pošiljanjem
+                ac.pop("_raw_time", None)
+                aircraft_list.append(ac)
+            else:
+                # Letalo je že odletelo iz dosega oz. je zastarelo, ne dodamo ga med aktivne markerje
+                pass
+
+        return {
+            "aircraft": aircraft_list,  # Samo dejansko aktivna letala v tisti minuti
+            "all_aircraft": aircraft_list,  # Sinhronizirano s stransko vrstico
+            "paths": formatted_paths,  # Sledi (izrisane poti) pa pustimo za vsa letala v 30-min oknu
+        }
 
     except Exception as e:
         print(f"Napaka v zgodovini: {e}")

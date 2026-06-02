@@ -265,7 +265,28 @@
             // Update Full List in sidebar
             const listDiv = document.getElementById('flight-list');
             listDiv.innerHTML = '';
-            data.all_aircraft.forEach(p => {
+
+            let visibleAircraft = [];
+
+            for (let hex in markers) {
+                // Poiščemo najnovejše podatke za ta hex v vseh prejetih letalih (tudi če so za sekundo izginila iz 'aircraft')
+                let p = data.aircraft.find(a => a.hex === hex) || data.all_aircraft.find(a => a.hex === hex);
+
+                if (p) {
+                    visibleAircraft.push(p);
+                } else {
+                    // Če podatkov sploh ni več v 24-urni zgodovini, uporabimo osnovni hex
+                    visibleAircraft.push({ hex: hex, flight: hex, alt_baro: 'N/A', gs: 'N/A' });
+                }
+            }
+
+            visibleAircraft.sort((a, b) => {
+                let nameA = (a.flight || a.hex).toString().trim();
+                let nameB = (b.flight || b.hex).toString().trim();
+                return nameA.localeCompare(nameB);
+            });
+
+            visibleAircraft.forEach(p => {
                 let item = document.createElement('div');
                 item.className = 'flight-item';
                 item.id = `flight-item-${p.hex}`;
@@ -278,13 +299,12 @@
             // Update active aircraft on map
             data.aircraft.forEach(p => {
                 let track = p.track || 0;
-
                 let isSelected = (p.hex === selectedFlightHex);
 
                 // Add/update marker
                 if (!markers[p.hex]) {
                     markers[p.hex] = L.marker([p.lat, p.lon], { icon: getPlaneIcon(track, isHistory, isSelected) }).addTo(map)
-                        .bindPopup(`<b>Fl: ${p.flight || p.hex}</b><br>Alt: ${p.alt_baro}<br>GS: ${p.gs}`);
+                        .bindPopup(`<b>Fl: ${p.flight || p.hex}</b><br>Alt: ${p.alt_baro}<br>GS: ${p.gs}`, { autoPan: false });
 
                     // POPRAVEK: Uporabimo Leafletov dogodek 'e', da ustavimo širjenje klika na zemljevid
                     markers[p.hex].on('click', (e) => {
@@ -294,6 +314,10 @@
                 } else {
                     markers[p.hex].setLatLng([p.lat, p.lon]);
                     markers[p.hex].setIcon(getPlaneIcon(track, isHistory, isSelected));
+                    let popup = markers[p.hex].getPopup();
+                    if (popup) {
+                        popup.options.autoPan = false;
+                    }
                     markers[p.hex].setPopupContent(`<b>Fl: ${p.flight || p.hex}</b><br>Alt: ${p.alt_baro}<br>GS: ${p.gs}`);
                 }
 
